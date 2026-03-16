@@ -1,5 +1,5 @@
 [project]
-name = "plugrl-client"
+name = "plugrl-protocol"
 version = "0.1.0"
 description = ""
 authors = [
@@ -8,15 +8,17 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.10,<4.0"
 dependencies = [
-    "loguru (>=0.7.3,<0.8.0)",
     "numpy (<2.3.3)",
-    "msgpack (>=1.1.1,<2.0.0)"
+    "msgpack (>=1.1.1,<2.0.0)",
 ]
 
-[tool.poetry]
-packages = [{include = "plugrl_client", from = "src"}]
+[tool.setuptools]
+package-dir = {"" = "src"}
 
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["plugrl_protocol*"]
 
 [build-system]
-requires = ["poetry-core>=2.0.0,<3.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"

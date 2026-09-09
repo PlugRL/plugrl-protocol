@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: If you use this software, please cite it as below.
+title: "PlugRL Protocol"
+abstract: >-
+  PlugRL separates the reinforcement learning training stack from the
+  environment stack with a process and network boundary, so environments whose
+  dependencies cannot coexist with a modern deep learning stack can still be
+  used for reinforcement learning. This repository holds the wire protocol shared by the server and every env client.
+type: software
+authors:
+  - family-names: Lu
+    given-names: Chenhao
+    email: luch21@mails.tsinghua.edu.cn
+repository-code: https://github.com/PlugRL/plugrl-protocol
+license: Apache-2.0
+version: 0.1.0
+date-released: "2026-09-09"
+keywords:
+  - reinforcement-learning
+  - vision-language-action
+  - robot-learning
+  - research-infrastructure

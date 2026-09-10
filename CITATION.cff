@@ -2,10 +2,13 @@ cff-version: 1.2.0
 message: If you use this software, please cite it as below.
 title: "PlugRL Protocol"
 abstract: >-
-  PlugRL separates the reinforcement learning training stack from the
-  environment stack with a process and network boundary, so environments whose
-  dependencies cannot coexist with a modern deep learning stack can still be
-  used for reinforcement learning. This repository holds the wire protocol shared by the server and every env client.
+  PlugRL runs reinforcement learning training and the environments it learns
+  from as separate processes, joined by a small WebSocket protocol, so the two
+  sides can be installed, versioned and scheduled independently and an env
+  client need not be written in Python at all. The protocol is openpi's
+  serving format plus a feedback return channel, which is what lets a client
+  close a training loop rather than only an inference one. This repository
+  holds the wire protocol shared by the server and every env client.
 type: software
 authors:
   - family-names: Lu

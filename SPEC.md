@@ -274,12 +274,33 @@ one-tuple).
 Sent once, immediately after the handshake, **before the client sends
 anything**. A client MUST read it before its first `infer`.
 
-> **Gap — `data` is always empty.** No entry point in `plugrl-server`
-> populates the metadata dict; both servers default it to `{}`. It is an
-> extension point with nothing in it. A client MUST NOT require any key.
-> Natural contents for a future revision: policy identifier, action horizon
-> `H`, action shape and dtype, and a protocol version — all of which a
-> client currently has to be told out of band.
+`data` is a map of descriptive keys. **A client MUST NOT require any of
+them**, and MUST ignore keys it does not recognise. What the server puts
+there today:
+
+| Key | Meaning |
+|---|---|
+| `protocol_version` | the version of this document the server implements — `1` |
+| `server` | `"plugrl-server"` |
+| `server_version` | the package version |
+| `algorithm` | the learning algorithm's class name |
+| `policy` | the policy's class name |
+| `action_horizon` | `H`, the number of steps in an action chunk |
+| `action_dim` | the width of one action |
+
+`action_horizon` and `action_dim` are read off the policy, which is free
+not to declare them. **A key that is absent means the server does not know,
+never that the value is zero or a default** — so a client that needs the
+shape and does not find it must be configured with it, exactly as before.
+That rule is what makes the rest of the map trustworthy.
+
+The server merges anything its caller passes over the top, so an operator
+can add a run identifier or correct a value the introspection got wrong.
+
+> **Historical note.** Through 2026-09-10 this message was always `{}` —
+> every entry point defaulted it and nothing filled it in, so the action
+> shape had to travel out of band. A client written against that behaviour
+> still works, which is why none of these keys are required.
 
 ### 5.2 `infer` — client to server
 

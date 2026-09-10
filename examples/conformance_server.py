@@ -193,10 +193,23 @@ class ConformanceServer:
         report = self.report
         packer = msgpack_numpy.Packer()
 
-        # Section 5.1: the server speaks first, with an envelope. Everything
-        # after this point is the client's turn to be judged.
+        # Section 5.1: the server speaks first, with an envelope, and the
+        # descriptive keys are how a client learns the action shape without
+        # being told out of band. They are sent here so that a client which
+        # reads them is exercised, and one which ignores them is proved not
+        # to break - section 5.1 requires no key to be present.
         await websocket.send(
-            packer.pack({"message_type": str(MessageType.METADATA), "data": {}})
+            packer.pack(
+                {
+                    "message_type": str(MessageType.METADATA),
+                    "data": {
+                        "protocol_version": 1,
+                        "server": "conformance_server.py",
+                        "action_horizon": self.horizon,
+                        "action_dim": self.action_dim,
+                    },
+                }
+            )
         )
 
         awaiting = "infer"

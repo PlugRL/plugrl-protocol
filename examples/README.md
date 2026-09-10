@@ -1,9 +1,9 @@
 # Reference clients
 
-Two env clients written against the protocol specification alone, sharing no
-code with PlugRL. They exist to make one claim checkable rather than asserted:
-that an environment can be driven by anything able to speak WebSocket and
-msgpack, including a robot's onboard controller.
+Two env clients written against [the protocol specification](../SPEC.md)
+alone, sharing no code with PlugRL. They exist to make one claim checkable
+rather than asserted: that an environment can be driven by anything able to
+speak WebSocket and msgpack, including a robot's onboard controller.
 
 Both drive a real `plugrl-server` through complete infer/action/feedback
 exchanges, and the server advances its training loop as it would for any
@@ -13,7 +13,7 @@ other client.
 |---|---|---|
 | Language | Python | C++17 |
 | Dependencies | `msgpack`, `websockets` | **none** |
-| Lines | 274 | 633 |
+| Lines | 275 | 693 |
 | Notably absent | numpy, and every `plugrl_*` package | libstdc++ and libc are the only links |
 
 The C++ one is the interesting case. It was written on a machine with no
@@ -46,20 +46,33 @@ images, states and text; arrays travel as
 ```
 
 `dtype` is a numpy typestr - a byte-order character, a kind character and an
-item size. It is the only piece of numpy vocabulary on the wire, and both
-clients parse it by hand in about ten lines (`_parse_typestr` in the Python
-one, `pack_ndarray` and the decode path in the C++ one). Note that numpy's
-`bool_` is one byte per element and Python's `array` module has no boolean
-typecode, so booleans are handled as raw bytes - which is what a C++ client
-would do anyway.
+item size. It is nearly the only piece of numpy vocabulary on the wire, and
+both clients parse it by hand in about ten lines (`_parse_typestr` in the
+Python one, `pack_ndarray` and the decode path in the C++ one). Note that
+numpy's `bool_` is one byte per element and Python's `array` module has no
+boolean typecode, so booleans are handled as raw bytes - which is what a C++
+client would do anyway.
 
 Everything else is ordinary: plain WebSocket, standard msgpack, no extension
 types. A hand-written HTTP upgrade is enough to get `101 Switching Protocols`
 and the first metadata frame.
 
-## Caveat
+[`../SPEC.md`](../SPEC.md) is the full statement, including the three rules
+these clients are too simple to exercise: the strict alternation of
+infer/action/feedback, the fact that a feedback's environment set need not
+match the infer's, and chunk-summed reward.
+
+## Caveats
 
 These are demonstrations, not production clients. They do not reconnect, do
 not handle the server's resync close reason, and invent their observations
 rather than reading a sensor. `plugrl-env-client` is the real one; these show
 what the floor looks like.
+
+One difference is worth naming rather than leaving to be discovered. These
+clients send the observation's `text` field as a **plain msgpack array of
+strings**; `plugrl-env-client` sends it as a numpy `<U` array, which is
+fixed-width UTF-32 padded with NULs. Both are accepted today, because the
+server forwards observations to the policy without validating them. See
+[SPEC.md section 3.4](../SPEC.md#34-text-is-the-one-real-wart) - it is a
+protocol defect, not a liberty these examples are taking.

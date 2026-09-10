@@ -348,7 +348,7 @@ action dtype and is not renegotiated.
   "step_ids":    <ndarray "<i8" shape [m]>,
   "data": {
     "obs":        <observation, batched to m>,
-    "rewards":    <ndarray "<f4" shape [m]>,
+    "rewards":    <ndarray, float kind, shape [m]>,
     "terminated": <ndarray "|b1" shape [m]>,
     "truncated":  <ndarray "|b1" shape [m]>,
     "info":       <map> } }
@@ -365,6 +365,11 @@ client accumulates reward across every environment step of the chunk and
 flushes the total when the chunk ends. Credit assignment reaching the
 learner is therefore at chunk granularity. A client that reports only the
 final step's reward will silently train on a different MDP.
+
+`plugrl-env-client` sends `<f4`. The server does not inspect the width, so a
+`<f8` reward is accepted; float32 is the convention rather than a rule, and
+`examples/conformance_server.py` reports the difference as a note rather
+than a violation.
 
 `terminated` and `truncated` are the flags from the **final** step of the
 chunk, carrying Gymnasium's usual distinction: `terminated` means the
@@ -483,9 +488,16 @@ A client conforms to version 1 if it:
       differently;
 - [ ] treats a text frame as a fatal error.
 
-The last item and the `env_ids` fallback are the two the reference clients
-in `examples/` deliberately do not implement; they are demonstrations of the
-floor, not production clients.
+`examples/conformance_server.py` checks every clause above that is visible
+from the server's side of the wire, and reports what it cannot enforce as a
+note rather than a failure. Both reference clients pass it with one note:
+they send `text` as a msgpack string array rather than a `<U` array, which
+is the section 3.4 Gap.
+
+What the harness cannot see is what a client does with the `action` it
+receives — reading `env_ids`, honouring the time-major layout, consuming the
+horizon in order. Those are checked on the Python side by
+`plugrl-env-client`'s `tests/test_protocol_alternation.py`.
 
 ---
 

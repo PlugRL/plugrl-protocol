@@ -13,7 +13,8 @@
 // a demonstration.
 //
 // Build:  g++ -std=c++17 -O2 -o plugrl_client plugrl_client.cpp
-// Run:    ./plugrl_client 127.0.0.1 8123 20
+// Run:    ./plugrl_client 127.0.0.1 8000 20        # host port steps
+//         ./plugrl_client 127.0.0.1 8000 20 1 224 2  # ... batch img cams
 
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -319,15 +320,107 @@ void pack_ndarray(Packer& p, const std::string& raw, const std::string& dtype,
   for (int64_t d : shape) p.integer(d);
 }
 
+// A numpy typestr: byte order, kind, decimal item size in bytes.
+// SPEC section 3.3.
+
+struct TypeStr {
+  char order;  // '<' or '>' after normalisation
+  char kind;   // 'b', 'u', 'i', 'f', 'U'
+  int size;    // bytes per element
+};
+
+TypeStr parse_typestr(const std::string& s) {
+  if (s.size() < 3) throw std::runtime_error("malformed typestr: " + s);
+  TypeStr t;
+  t.order = (s[0] == '|') ? '<' : s[0];  // '|' means single-byte, so moot
+  t.kind = s[1];
+  t.size = std::stoi(s.substr(2));
+  if (t.size <= 0) throw std::runtime_error("malformed typestr: " + s);
+  return t;
+}
+
+// Read one element as a double, whatever integer or float type it is on the
+// wire. The point is not generality for its own sake: SPEC section 8 asks a
+// client to parse the typestr rather than assume a dtype, because the action
+// dtype is the environment's and is never renegotiated.
+double read_element(const std::string& raw, size_t index, const TypeStr& t) {
+  size_t off = index * static_cast<size_t>(t.size);
+  if (off + static_cast<size_t>(t.size) > raw.size())
+    throw std::runtime_error("ndarray data shorter than shape implies");
+
+  uint64_t bits = 0;
+  for (int i = 0; i < t.size; ++i) {
+    // Little-endian: byte i is the i-th least significant.
+    int byte = (t.order == '<') ? i : (t.size - 1 - i);
+    bits |= static_cast<uint64_t>(static_cast<uint8_t>(raw[off + byte]))
+            << (8 * i);
+  }
+
+  switch (t.kind) {
+    case 'f':
+      if (t.size == 4) {
+        float f;
+        uint32_t narrow = static_cast<uint32_t>(bits);
+        std::memcpy(&f, &narrow, 4);
+        return f;
+      }
+      if (t.size == 8) {
+        double d;
+        std::memcpy(&d, &bits, 8);
+        return d;
+      }
+      break;
+    case 'b':
+      return bits ? 1.0 : 0.0;
+    case 'u':
+      return static_cast<double>(bits);
+    case 'i': {
+      // Sign-extend from the declared width.
+      int shift = 64 - 8 * t.size;
+      return static_cast<double>(static_cast<int64_t>(bits << shift) >> shift);
+    }
+    default:
+      break;
+  }
+  throw std::runtime_error("unsupported dtype kind/size in typestr");
+}
+
+// The typestr says "<f8", "<f4" and "<i8", so the bytes must be
+// little-endian whatever this machine is. A memcpy from the host layout is
+// right on x86 and silently wrong on a big-endian controller - and the
+// receiver cannot tell, because the declared byte order still says little.
+
+void put_le(std::string& out, uint64_t bits, int bytes) {
+  for (int i = 0; i < bytes; ++i)
+    out.push_back(static_cast<char>((bits >> (8 * i)) & 0xff));
+}
+
 std::string pack_f8(const std::vector<double>& v) {
-  std::string out(v.size() * 8, '\0');
-  std::memcpy(&out[0], v.data(), out.size());  // x86 is little-endian, "<f8"
+  std::string out;
+  out.reserve(v.size() * 8);
+  for (double x : v) {
+    uint64_t bits;
+    std::memcpy(&bits, &x, 8);
+    put_le(out, bits, 8);
+  }
+  return out;
+}
+
+std::string pack_f4(const std::vector<float>& v) {
+  std::string out;
+  out.reserve(v.size() * 4);
+  for (float x : v) {
+    uint32_t bits;
+    std::memcpy(&bits, &x, 4);
+    put_le(out, bits, 4);
+  }
   return out;
 }
 
 std::string pack_i8(const std::vector<int64_t>& v) {
-  std::string out(v.size() * 8, '\0');
-  std::memcpy(&out[0], v.data(), out.size());
+  std::string out;
+  out.reserve(v.size() * 8);
+  for (int64_t x : v) put_le(out, static_cast<uint64_t>(x), 8);
   return out;
 }
 
@@ -379,8 +472,15 @@ class WebSocket {
     write_all(frame.data(), frame.size());
   }
 
+  // The largest message this client will accept. Observations with two
+  // cameras run to a few hundred KiB; 256 MiB is far above anything the
+  // protocol produces and far below what a hostile length field could ask
+  // us to allocate.
+  static constexpr uint64_t kMaxMessageBytes = 256ull << 20;
+
   std::string recv_message() {
     std::string message;
+    bool first_data_frame = true;
     for (;;) {
       uint8_t h[2];
       read_all(h, 2);
@@ -396,6 +496,8 @@ class WebSocket {
         len = 0;
         for (int i = 0; i < 8; ++i) len = (len << 8) | e[i];
       }
+      if (len > kMaxMessageBytes || message.size() + len > kMaxMessageBytes)
+        throw std::runtime_error("frame larger than this client will accept");
       uint8_t key[4] = {0, 0, 0, 0};
       if (masked) read_all(key, 4);
 
@@ -407,6 +509,21 @@ class WebSocket {
       if (opcode == 0x8) throw std::runtime_error("server closed the connection");
       if (opcode == 0x9) { send_pong(chunk); continue; }
       if (opcode == 0xa) continue;
+
+      // SPEC section 7.4: every protocol message is binary. A text frame
+      // where one was expected means the peer is reporting an error, not
+      // speaking the protocol - openpi servers send a traceback this way.
+      // Unpacking it as msgpack would turn a legible error into "unsupported
+      // msgpack type 0x47".
+      if (first_data_frame) {
+        if (opcode == 0x1)
+          throw std::runtime_error("server sent a text frame: " +
+                                   chunk.substr(0, 2048));
+        if (opcode != 0x2)
+          throw std::runtime_error("unexpected websocket opcode " +
+                                   std::to_string(static_cast<int>(opcode)));
+        first_data_frame = false;
+      }
 
       message += chunk;
       if (fin) return message;
@@ -604,17 +721,21 @@ int run(const std::string& host, int port, int steps, int batch) {
       if (d == 0) { std::cerr << "server returned an empty action\n"; return 1; }
 
     if (step == 0) {
+      // SPEC section 5.3: the action array is time-major, [H, n, *da]. The
+      // dtype is the environment's and is not renegotiated, so it is read
+      // from the typestr rather than assumed to be float32.
+      TypeStr at = parse_typestr(dtype->s);
       std::cout << "action: dtype=" << dtype->s << " shape=[";
       for (size_t i = 0; i < dims.size(); ++i)
         std::cout << dims[i] << (i + 1 < dims.size() ? ", " : "");
-      std::cout << "]\n        first values:";
-      // "<f4" is float32, little-endian, which is this machine's layout.
-      size_t count = std::min<size_t>(6, blob->s.size() / 4);
-      for (size_t i = 0; i < count; ++i) {
-        float f;
-        std::memcpy(&f, blob->s.data() + i * 4, 4);
-        std::cout << " " << f;
-      }
+      std::cout << "]";
+      if (dims.size() >= 2)
+        std::cout << "  (horizon " << dims[0] << " x " << dims[1] << " env"
+                  << (dims[1] == 1 ? "" : "s") << ")";
+      std::cout << "\n        first values:";
+      size_t count = std::min<size_t>(6, blob->s.size() / static_cast<size_t>(at.size));
+      for (size_t i = 0; i < count; ++i)
+        std::cout << " " << read_element(blob->s, i, at);
       std::cout << "\n";
     }
 
@@ -627,12 +748,12 @@ int run(const std::string& host, int port, int steps, int batch) {
     fb.map(5);
     fb.str("obs");        pack_observation(fb, batch);
     {
-      std::string rewards(static_cast<size_t>(batch) * 4, '\0');
-      for (int i = 0; i < batch; ++i) {
-        float r = static_cast<float>(next_float());
-        std::memcpy(&rewards[i * 4], &r, 4);
-      }
-      fb.str("rewards"); pack_ndarray(fb, rewards, "<f4", {batch});
+      // SPEC section 5.4: a real client reports the reward summed over the
+      // whole action chunk here, not the last step's. This one invents a
+      // number - the shape of the exchange is the point, not the signal.
+      std::vector<float> rewards(static_cast<size_t>(batch));
+      for (auto& r : rewards) r = static_cast<float>(next_float());
+      fb.str("rewards"); pack_ndarray(fb, pack_f4(rewards), "<f4", {batch});
     }
     fb.str("terminated");
     pack_ndarray(fb, std::string(batch, '\0'), "|b1", {batch});
@@ -679,7 +800,7 @@ int run(const std::string& host, int port, int steps, int batch) {
 int main(int argc, char** argv) {
   // host port steps batch img_size cameras
   std::string host = argc > 1 ? argv[1] : "127.0.0.1";
-  int port = argc > 2 ? std::stoi(argv[2]) : 8123;
+  int port = argc > 2 ? std::stoi(argv[2]) : 8000;  // the server default
   int steps = argc > 3 ? std::stoi(argv[3]) : 20;
   int batch = argc > 4 ? std::stoi(argv[4]) : 1;
   if (argc > 5) g_img_size = std::stoi(argv[5]);

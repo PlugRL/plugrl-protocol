@@ -1,2 +1,11 @@
 PlugRL
 Copyright 2026 The PlugRL Authors
+
+This product includes software developed at Physical Intelligence
+(https://github.com/Physical-Intelligence/openpi), Copyright 2024
+Physical Intelligence, licensed under the Apache License, Version 2.0.
+
+  src/plugrl_protocol/msgpack_numpy.py is taken from openpi's
+  packages/openpi-client/src/openpi_client/msgpack_numpy.py, which is in
+  turn adapted from msgpack-numpy (https://github.com/lebedov/msgpack-numpy),
+  Copyright 2013-2023 Lev E. Givon, BSD 3-Clause.

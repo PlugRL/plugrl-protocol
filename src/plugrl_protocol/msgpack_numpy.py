@@ -1,5 +1,11 @@
 """Adds NumPy array support to msgpack.
 
+Taken from openpi (https://github.com/Physical-Intelligence/openpi),
+Copyright 2024 Physical Intelligence, licensed under Apache-2.0, at
+packages/openpi-client/src/openpi_client/msgpack_numpy.py. Reformatted
+only; the wire format is deliberately identical so that PlugRL clients
+and openpi clients speak the same bytes.
+
 msgpack is good for (de)serializing data over a network for multiple reasons:
 - msgpack is secure (as opposed to pickle/dill/etc which allow for arbitrary code execution)
 - msgpack is widely used and has good cross-language support

@@ -7,7 +7,7 @@ in C++, a ROS node, anything that is not this Python codebase.
 To make that test mean something, the rules here are strict:
 
   * nothing from plugrl_protocol, plugrl_env_client or plugrl_server
-  * no numpy - arrays are built and parsed with `struct` and `array`, exactly
+  * no numpy - arrays are built and parsed with the `array` module, exactly
     as a C++ client would have to
   * only msgpack and websockets, both of which have mature implementations in
     C++, Rust, Go, JavaScript and more
@@ -23,7 +23,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import struct
 import sys
 from array import array
 
@@ -227,8 +226,10 @@ def run(host: str, port: int, steps: int, batch: int) -> int:
 
             values, typestr, shape = decode_array(action_field)
             if 0 in shape:
-                print(f"action shape {shape} contains a zero: the server "
-                      f"produced no action for this request")
+                print(
+                    f"action shape {shape} contains a zero: the server "
+                    f"produced no action for this request"
+                )
                 return 1
             if step == 0:
                 print(f"action: dtype={typestr} shape={shape}")

@@ -14,6 +14,9 @@ authors:
   - family-names: Lu
     given-names: Chenhao
     email: luch21@mails.tsinghua.edu.cn
+  - family-names: Gou
+    given-names: Zuo
+    alias: Gotham-Zolio
 repository-code: https://github.com/PlugRL/plugrl-protocol
 license: Apache-2.0
 version: 0.1.0

@@ -485,6 +485,30 @@ A client should nonetheless be prepared to receive a **text** frame where it
 expected binary, and treat it as a fatal server-side error rather than
 attempting to unpack it.
 
+### 7.5 The client stopping
+
+Everything above is the server closing. A client may also stop first - it
+has collected the episodes it was asked for, or its operator interrupted it -
+and that is not an error. The server keeps no state that outlives the
+connection, so a client that disappears costs nothing beyond the feedback it
+had not yet sent.
+
+A client that is finished **SHOULD** send a WebSocket close frame with status
+**1000 (normal closure)** before dropping the socket, as RFC 6455 section
+5.5.1 asks. Nothing breaks without one - the server sees the connection end
+either way - but the difference is visible in its logs, as
+`ConnectionClosedError: no close frame received or sent` rather than a clean
+`ConnectionClosedOK`, and an operator reading those logs should not have to
+wonder whether a client crashed.
+
+`examples/conformance_server.py` reports a missing close frame as a note, not
+a violation, which is the level this rule deserves.
+
+> **Historical note.** Until 2026-09-11 the C++ reference client did not send
+> one. It went unnoticed because in every test until then the *server* ran
+> out of steps first and closed the connection itself; E7, where the client
+> finishes first, made it visible on all 45 runs.
+
 ---
 
 ## 8. Conformance checklist

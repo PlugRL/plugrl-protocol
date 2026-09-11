@@ -445,7 +445,36 @@ class WebSocket {
     handshake(host, port);
   }
 
-  ~WebSocket() { if (fd_ >= 0) ::close(fd_); }
+  // RFC 6455 section 5.5.1: say goodbye before dropping the socket. Without
+  // this the server sees the connection vanish and reports
+  // `ConnectionClosedError: no close frame received or sent` - which is what
+  // it did on all 45 runs of E7, where the client finishes first. It only
+  // went unnoticed before because in every earlier test the *server* ran out
+  // of steps first and closed the connection itself.
+  void close_cleanly() {
+    if (fd_ < 0) return;
+    std::string frame;
+    frame.push_back(static_cast<char>(0x88));  // FIN + close opcode
+    frame.push_back(static_cast<char>(0x80 | 2));  // masked, 2-byte payload
+    uint8_t key[4];
+    for (int i = 0; i < 4; ++i) key[i] = static_cast<uint8_t>(rng_() & 0xff);
+    frame.append(reinterpret_cast<char*>(key), 4);
+    uint8_t status[2] = {0x03, 0xe8};  // 1000, normal closure
+    for (int i = 0; i < 2; ++i)
+      frame.push_back(static_cast<char>(status[i] ^ key[i % 4]));
+    try {
+      write_all(frame.data(), frame.size());
+    } catch (const std::exception&) {
+      // Already gone. Nothing useful to do on the way out.
+    }
+    ::close(fd_);
+    fd_ = -1;
+  }
+
+  ~WebSocket() {
+    close_cleanly();
+    if (fd_ >= 0) ::close(fd_);
+  }
 
   void send_binary(const std::string& payload) {
     std::string frame;

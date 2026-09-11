@@ -76,13 +76,19 @@ the full comparison.
 
 ## Installing
 
+Not on PyPI. Install from git, pinned to a commit - which is how
+`plugrl-server` and `plugrl-env-client` depend on it:
+
 ```bash
-uv add plugrl-protocol      # or: pip install plugrl-protocol
+uv add "plugrl-protocol @ git+https://github.com/PlugRL/plugrl-protocol.git@<commit>"
+# or
+pip install "plugrl-protocol @ git+https://github.com/PlugRL/plugrl-protocol.git@<commit>"
 ```
 
-Only needed by Python clients that want the shared codec. A client in
-another language should implement [SPEC.md](SPEC.md) directly; that is what
-the C++ example does.
+Only Python clients that want the shared codec need this at all. A client in
+another language should implement [SPEC.md](SPEC.md) directly, which is what
+the C++ example does - and what `examples/conformance_server.py` will grade
+it against.
 
 ## License
 

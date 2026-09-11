@@ -490,8 +490,9 @@ attempting to unpack it.
 Everything above is the server closing. A client may also stop first - it
 has collected the episodes it was asked for, or its operator interrupted it -
 and that is not an error. The server keeps no state that outlives the
-connection, so a client that disappears costs nothing beyond the feedback it
-had not yet sent.
+connection, so a client that is done costs nothing beyond the feedback it had
+not yet sent. A client that intends to come back pays more than that; see
+section 7.6.
 
 A client that is finished **SHOULD** send a WebSocket close frame with status
 **1000 (normal closure)** before dropping the socket, as RFC 6455 section
@@ -508,6 +509,43 @@ a violation, which is the level this rule deserves.
 > one. It went unnoticed because in every test until then the *server* ran
 > out of steps first and closed the connection itself; E7, where the client
 > finishes first, made it visible on all 45 runs.
+
+### 7.6 Reconnecting
+
+Section 7.2 says the server's per-environment state went with the closed
+connection. That is true of **every** close, not only a resync, and it is the
+one thing a reconnecting client has to reason about.
+
+The server holds, per environment and for exactly one connection: the
+previous observation, the policy step state, and the terminated / truncated
+flags. A new connection begins with none of them. So:
+
+* a client that reconnects **MUST** drop any `feedback` it was holding;
+* it reads a fresh `metadata` and resumes from a fresh `infer`;
+* a `feedback` whose `action` arrived on an earlier connection describes a
+  transition the server can no longer complete, because it has no previous
+  observation to attach it to. Sending it produces a transition built from
+  nothing, which is worse than the lost step it was trying to save.
+
+A server **SHOULD** say something when it receives feedback for an
+environment it has no step state for. That condition has exactly one cause -
+the connection was replaced mid-run - and storing the transition silently
+puts a hole in the training data that nothing downstream can detect.
+
+> **The corollary for servers.** Because a reconnect costs real data, a
+> server **MUST NOT** close a healthy connection for a liveness reason this
+> protocol already covers. WebSocket keepalive pings are the trap: a server
+> doing a CPU-bound learn step does not run its event loop, does not answer
+> its own library's ping, and closes the connection under a client that is
+> perfectly alive. Section 7.3's feedback timeout is this protocol's liveness
+> check, and it measures the right thing - progress through the exchange
+> rather than event-loop responsiveness.
+
+> **Historical note.** Until 2026-09-11 `plugrl-server` left the `websockets`
+> default of a 20 s ping with a 20 s timeout in place. On a CPU-only machine
+> the quickstart dropped its connection twice in six minutes, and each
+> reconnect fed the learner one transition with an empty previous
+> observation. It was invisible because nothing on either side was an error.
 
 ---
 
@@ -531,6 +569,8 @@ A client conforms to version 1 if it:
       the step that reports done;
 - [ ] handles close reasons `plugrl-server-stop` and `plugrl-server-resync`
       differently;
+- [ ] drops any held `feedback` when a connection closes, and never sends
+      `feedback` for an `action` that arrived on an earlier connection;
 - [ ] treats a text frame as a fatal error.
 
 `examples/conformance_server.py` checks every clause above that is visible

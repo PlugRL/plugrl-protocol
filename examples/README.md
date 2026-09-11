@@ -16,10 +16,20 @@ broke. `plugrl-server` is deliberately forgiving — it validates the
 trade for a training run and the wrong one for someone bringing up a client
 in a new language.
 
+The two Python files here need `websockets>=13`, which is **not** a
+dependency of `plugrl-protocol` - installing the package does not get you
+one. `conformance_server.py` imports `websockets.asyncio.server` and
+`raw_client.py` imports `websockets.sync.client`; the `asyncio` layout
+arrived in 13.0, so websockets 12 fails on the import. Ask for it
+explicitly, from this directory:
+
 ```bash
-python conformance_server.py --port 8000 --steps 20 &
+uv run --with 'websockets>=13' conformance_server.py --port 8000 --steps 20 &
 ./plugrl_client 127.0.0.1 8000 20
 ```
+
+`pip install 'websockets>=13'` and then `python conformance_server.py ...`
+works just as well. The C++ client needs nothing.
 
 It exits non-zero on a violation, so it can sit in a CI job. Both clients
 here pass it with one note: they send `text` as a msgpack string array
@@ -58,7 +68,7 @@ g++ -std=c++17 -O2 -o plugrl_client plugrl_client.cpp
 ```
 
 ```bash
-python raw_client.py --host 127.0.0.1 --port 8000 --steps 120
+uv run --with 'websockets>=13' raw_client.py --host 127.0.0.1 --port 8000 --steps 120
 ```
 
 ## What the protocol asks of a client

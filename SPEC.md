@@ -532,32 +532,21 @@ environment it has no step state for. That condition has exactly one cause -
 the connection was replaced mid-run - and storing the transition silently
 puts a hole in the training data that nothing downstream can detect.
 
-> **The corollary for servers.** Because a reconnect costs real data, a
-> server **MUST NOT** close a healthy connection for a liveness reason this
-> protocol already covers. WebSocket keepalive pings are the trap: a server
-> doing a CPU-bound learn step does not run its event loop, does not answer
-> its own library's ping, and closes the connection under a client that is
-> perfectly alive. Section 7.3's feedback timeout is this protocol's liveness
-> check, and it measures the right thing - progress through the exchange
-> rather than event-loop responsiveness.
+> **Where reconnects come from.** Nothing in this protocol causes them and
+> nothing in it can prevent them: a suspended laptop, a flaky link, an
+> operator restarting the server. The rule above is written in terms of the
+> reconnect rather than its cause, because the cost is the same either way,
+> and because a client cannot tell the causes apart from where it sits.
 
-> **Gap — nothing bounds the wait for the next `infer`.** Section 7.3's
-> timeout covers the gap between an `action` and its `feedback`, and that is
-> the only wait the server bounds. A peer that dies without closing its
-> socket, between a `feedback` and the next `infer`, is noticed only when the
-> operating system gives up on the TCP connection. Keepalive pings used to
-> cover it, at the price above; the server now accepts the leak instead,
-> because it costs one idle coroutine and a socket in a run that was going to
-> stall anyway. Bounding it properly needs a number larger than the longest
-> legitimate pause a client can take before its first `infer` - an
-> environment reset on real hardware - and that number is not the server's to
-> know.
-
-> **Historical note.** Until 2026-09-11 `plugrl-server` left the `websockets`
-> default of a 20 s ping with a 20 s timeout in place. On a CPU-only machine
-> the quickstart dropped its connection twice in six minutes, and each
-> reconnect fed the learner one transition with an empty previous
-> observation. It was invisible because nothing on either side was an error.
+> **Historical note.** This section exists because of a run that dropped its
+> connection after the machine it was on suspended for nearly two hours. The
+> reconnect was handled, and the transition that crossed it was not: the env
+> client resent the `feedback` it was holding, and the server completed it
+> from an empty observation and stored it. The first diagnosis blamed
+> WebSocket keepalive pings and a long learn step, which measurement then
+> ruled out - `plugrl-server` runs `learn` off the event loop, and learns of
+> 190 s produce no ping timeout. The cause was mundane. The hole in the
+> protocol was not, and had nothing to do with it.
 
 ---
 

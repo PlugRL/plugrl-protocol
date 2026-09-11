@@ -398,10 +398,30 @@ episode ended by the environment's own rules, `truncated` means it was cut
 short (time limit, external stop). A chunk is also flushed early when either
 flag is set, so a terminal transition is never buried inside a chunk.
 
-`info` is a free-form map. When present, its values are expected to be
-batched to `m` along a leading axis, and the server slices them per
-environment; a value that is not `m`-shaped is passed through to every
-environment unchanged. `{}` is valid and is what the reference clients send.
+`info` is a free-form map. `{}` is valid and is what both reference clients
+send. Anything else needs care, and the rule is narrower than it looks.
+
+> **Gap - a non-empty `info` can close the connection.** The server unbatches
+> it by looking for the first value that is an ndarray and taking `m` from
+> that array's leading axis, then slicing every ndarray value by it; a
+> scalar or string sitting alongside is broadcast to all `m` environments,
+> which is the documented behaviour. But if *no* value is an ndarray, the
+> map is returned whole as a single per-environment entry regardless of `m`
+> - `{"task": "pick"}` with `m` = 2 yields one entry, and so does a
+> correctly batched msgpack *list* of length `m`, because a list is not an
+> ndarray. The handler then asserts that the per-environment count equals
+> the observation count, and an `AssertionError` there becomes a close with
+> **1011** and the reason `Internal server error.` (the
+> `assert len(info_list) == len(next_obs_list) or len(info_list) == 0` in
+> `websocket_agent_server.py`'s connection handler, and `unbatch_aggregate`
+> in `plugrl-server`'s `common/data_utils.py`).
+>
+> So a non-empty `info` is safe only when at least one of its values is an
+> ndarray of length `m`, or when `m` is 1, where the mismatch cannot arise.
+> The previous wording of this paragraph - that a value which is not
+> `m`-shaped is passed through to every environment unchanged - is true only
+> in the first of those cases. This has not bitten anyone because the
+> reference clients send `{}`.
 
 #### Terminal observations
 
@@ -532,6 +552,19 @@ environment it has no step state for. That condition has exactly one cause -
 the connection was replaced mid-run - and storing the transition silently
 puts a hole in the training data that nothing downstream can detect.
 
+> **Gap - the reference client breaks this on one path.**
+> `plugrl-env-client` run with `--reconnect-on-server-stop` resends the
+> `feedback` it was holding instead of dropping it, when the close it hit was
+> the server's `plugrl-server-stop`. In `websocket_env_client_agent.py`,
+> `feedback()`'s `SERVER_STOP_REASON` branch `continue`s its retry loop,
+> which opens a new connection, reads fresh metadata, and re-sends the same
+> payload - the exact resend the historical note below says this section
+> exists to prevent. Every other close path in that method returns and drops
+> the transition, and `tests/test_reconnect_drops_feedback.py` covers three
+> of them (a keepalive timeout, a plain 1000 close, a resync) but not this
+> one. It is the only path in the reference client that violates the **MUST**
+> above.
+
 > **Where reconnects come from.** Nothing in this protocol causes them and
 > nothing in it can prevent them: a suspended laptop, a flaky link, an
 > operator restarting the server. The rule above is written in terms of the
@@ -574,16 +607,38 @@ A client conforms to version 1 if it:
       `feedback` for an `action` that arrived on an earlier connection;
 - [ ] treats a text frame as a fatal error.
 
-`examples/conformance_server.py` checks every clause above that is visible
-from the server's side of the wire, and reports what it cannot enforce as a
-note rather than a failure. Both reference clients pass it with one note:
-they send `text` as a msgpack string array rather than a `<U` array, which
-is the section 3.4 Gap.
+`examples/conformance_server.py` checks the clauses above that one passive
+connection can observe - framing, alternation, env indices, observation
+shape, and the feedback payload's keys, dtypes and lengths - and reports
+what it accepts but cannot require as a note rather than a failure. Both
+reference clients pass it with one note: they send `text` as a msgpack
+string array rather than a `<U` array, which is the section 3.4 Gap.
 
-What the harness cannot see is what a client does with the `action` it
-receives — reading `env_ids`, honouring the time-major layout, consuming the
-horizon in order. Those are checked on the Python side by
-`plugrl-env-client`'s `tests/test_protocol_alternation.py`.
+It does not check the rest, and an unexercised clause leaves no trace in its
+report: every clause string in the harness names section 2, 3.4, 4.2, 4.4,
+5.2, 5.4 or 7.5 - or is the catch-all `connection` - and the report iterates
+only the clauses it touched. A client that breaks all of the following still
+prints "no violations":
+
+* the connection options of section 1.1 - the harness sets `compression` and
+  `max_size` on its own side and never inspects what the client offered;
+* reading `metadata` before sending anything;
+* chunk-summed reward, and the terminal observation on a done step;
+* handling the two close reasons differently, dropping held `feedback`
+  across a reconnect, and treating a text frame as fatal - these three need
+  the harness to drive a close or send a text frame, which is more than
+  watching one well-behaved connection.
+
+What no server-side harness can see at all is what a client does with the
+`action` it receives. Honouring the time-major layout and consuming the
+horizon in order are checked on the Python side, by `plugrl-env-client`'s
+`tests/test_protocol_alternation.py::TestChunkSemantics`. Reading `env_ids`
+is not checked anywhere: `plugrl-server` sends the key, and the Python
+client discards it - `infer()` returns the whole `data` map and its only
+caller takes `["action"]` out of it, and the string `env_ids` does not
+occur anywhere in `plugrl-env-client`'s source or tests. The clause above
+is a rule for clients in other languages, with no reference implementation
+behind it.
 
 ---
 
@@ -617,12 +672,32 @@ or Rust — carries across unchanged.
 
 ## 10. Versioning
 
-This is version 1. It has no version field on the wire; section 5.1 notes
-that the metadata message is the obvious place to put one, and that it
-should be.
+This is version 1. The server publishes it as `protocol_version` in the
+metadata message (section 5.1), but there is no negotiation: a client
+**MUST NOT** require the key, and the server does not adapt to a client's
+version.
+
+> **Correction, 2026-09-11.** This paragraph used to say version 1 "has no
+> version field on the wire" and attributed to section 5.1 a remark that the
+> metadata message was the obvious place for one. Both halves went stale on
+> 2026-09-10, when the metadata message gained contents: `protocol_version`
+> has been in it on every connection since, in `plugrl-server` and in
+> `examples/conformance_server.py` alike, and section 5.1 lists it as a key
+> the server sends rather than as a suggestion. What survives is the absence
+> of negotiation, which is what the sentence was reaching for.
 
 Changing any of the four `message_type` strings, the two close reasons, the
 ndarray key names, the action array's axis order, or the meaning of
-`rewards` is a **breaking** change. `tests/test_wire_format.py` and
-`tests/test_spec_conformance.py` exist so that such a change fails a test
-rather than a deployment.
+`rewards` is a **breaking** change.
+
+The first three are pinned in this repository, and a change to them fails a
+test rather than a deployment: `tests/test_wire_format.py` holds the four
+`message_type` strings and the two close reasons,
+`tests/test_spec_conformance.py` the four ndarray key names. The last two
+are not, and cannot be - this is the codec repository, and the axis order
+and the chunk-sum rule are properties of how the two sides behave, not of
+what the packer emits. Transposing the action chunk or redefining `rewards`
+as the last step's reward passes every test here. They are covered instead
+by `plugrl-env-client`'s
+`tests/test_protocol_alternation.py::TestChunkSemantics`, which is the same
+file section 8 points at.

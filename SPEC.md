@@ -541,6 +541,18 @@ puts a hole in the training data that nothing downstream can detect.
 > check, and it measures the right thing - progress through the exchange
 > rather than event-loop responsiveness.
 
+> **Gap — nothing bounds the wait for the next `infer`.** Section 7.3's
+> timeout covers the gap between an `action` and its `feedback`, and that is
+> the only wait the server bounds. A peer that dies without closing its
+> socket, between a `feedback` and the next `infer`, is noticed only when the
+> operating system gives up on the TCP connection. Keepalive pings used to
+> cover it, at the price above; the server now accepts the leak instead,
+> because it costs one idle coroutine and a socket in a run that was going to
+> stall anyway. Bounding it properly needs a number larger than the longest
+> legitimate pause a client can take before its first `infer` - an
+> environment reset on real hardware - and that number is not the server's to
+> know.
+
 > **Historical note.** Until 2026-09-11 `plugrl-server` left the `websockets`
 > default of a 20 s ping with a 20 s timeout in place. On a CPU-only machine
 > the quickstart dropped its connection twice in six minutes, and each

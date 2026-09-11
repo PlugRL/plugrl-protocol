@@ -31,6 +31,7 @@ import sys
 
 import numpy as np
 import websockets.asyncio.server as ws_server
+import websockets.exceptions as ws_exceptions
 
 # Use the real codec, not a re-implementation: the point is to test a client
 # against what plugrl-server actually does.
@@ -245,6 +246,21 @@ class ConformanceServer:
                     self.check_feedback(payload)
                     awaiting = str(MessageType.INFER)
                     self.exchanges += 1
+        except ws_exceptions.ConnectionClosedOK:
+            # The client said goodbye and left. SPEC.md section 7.5 allows
+            # that at any point, so it is not a failure - a client that has
+            # collected the episodes it wanted is finished, and the server
+            # does not get to call that a protocol violation.
+            report.ok("7.5 a client that stops sends a close frame")
+        except ws_exceptions.ConnectionClosedError:
+            # It vanished without a close frame. Section 7.5 asks for one,
+            # and nothing breaks without it, so this is a note.
+            report.advise(
+                False,
+                "7.5 a client that stops sends a close frame",
+                "the connection dropped with no close frame; RFC 6455 asks "
+                "for one and SPEC.md section 7.5 repeats the ask",
+            )
         except Exception as exc:  # noqa: BLE001 - the report is the output
             report.fail("connection", f"{type(exc).__name__}: {exc}")
         finally:

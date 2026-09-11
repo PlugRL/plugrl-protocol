@@ -41,7 +41,7 @@ see whether the values it prints are the ones the server sent.
 |---|---|---|
 | Language | Python | C++17 |
 | Dependencies | `msgpack`, `websockets` | **none** |
-| Lines | 275 | 814 |
+| Lines | 275 | 843 |
 | Notably absent | numpy, and every `plugrl_*` package | libstdc++ and libc are the only links |
 
 The C++ one is the interesting case. It was written on a machine with no

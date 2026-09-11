@@ -1,5 +1,11 @@
 """Adds NumPy array support to msgpack.
 
+Taken from openpi (https://github.com/Physical-Intelligence/openpi),
+Copyright 2024 Physical Intelligence, licensed under Apache-2.0, at
+packages/openpi-client/src/openpi_client/msgpack_numpy.py. Reformatted
+only; the wire format is deliberately identical so that PlugRL clients
+and openpi clients speak the same bytes.
+
 msgpack is good for (de)serializing data over a network for multiple reasons:
 - msgpack is secure (as opposed to pickle/dill/etc which allow for arbitrary code execution)
 - msgpack is widely used and has good cross-language support
@@ -19,7 +25,11 @@ import numpy as np
 
 
 def pack_array(obj):
-    if (isinstance(obj, (np.ndarray, np.generic))) and obj.dtype.kind in ("V", "O", "c"):
+    if (isinstance(obj, (np.ndarray, np.generic))) and obj.dtype.kind in (
+        "V",
+        "O",
+        "c",
+    ):
         raise ValueError(f"Unsupported dtype: {obj.dtype}")
 
     if isinstance(obj, np.ndarray):
@@ -42,7 +52,9 @@ def pack_array(obj):
 
 def unpack_array(obj):
     if b"__ndarray__" in obj:
-        return np.ndarray(buffer=obj[b"data"], dtype=np.dtype(obj[b"dtype"]), shape=obj[b"shape"])
+        return np.ndarray(
+            buffer=obj[b"data"], dtype=np.dtype(obj[b"dtype"]), shape=obj[b"shape"]
+        )
 
     if b"__npgeneric__" in obj:
         return np.dtype(obj[b"dtype"]).type(obj[b"data"])

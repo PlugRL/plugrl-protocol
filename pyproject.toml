@@ -1,16 +1,28 @@
 [project]
 name = "plugrl-protocol"
 version = "0.1.0"
-description = ""
+description = "PlugRL wire protocol: message types and msgpack-numpy serialization."
 authors = [
-    {name = "chenhao lu",email = "luch21@mails.tsinghua.edu.cn"}
+    {name = "chenhao lu",email = "luch21@mails.tsinghua.edu.cn"},
+    {name = "Zuo Gou"}
 ]
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10,<4.0"
 dependencies = [
     "numpy (<2.3.3)",
     "msgpack (>=1.1.1,<2.0.0)",
 ]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.5.1,<5.0.0",
+    "pytest>=8.4.2",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -20,5 +32,5 @@ where = ["src"]
 include = ["plugrl_protocol*"]
 
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"

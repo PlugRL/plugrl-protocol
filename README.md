@@ -20,11 +20,25 @@ own known defects, and everything in it that can be checked by a test is.
 |---|---|
 | [`SPEC.md`](SPEC.md) | the protocol, in full |
 | [`src/plugrl_protocol/`](src/plugrl_protocol/) | the message types and the msgpack codec — 101 lines |
+| [`src/plugrl_protocol/conformance.py`](src/plugrl_protocol/conformance.py) | `plugrl-conformance`, which grades a client clause by clause |
 | [`examples/`](examples/) | two env clients written against the spec, sharing no code with PlugRL |
 | [`tests/`](tests/) | the spec's checkable clauses, as tests |
 
-The package is small on purpose. It is the piece both sides import, so
-anything that could live on one side does.
+The codec is small on purpose. It is the piece both sides import, so anything
+that could live on one side does; the checker sits beside it rather than in
+it, and is not imported by either side at runtime.
+
+## Checking a client
+
+One command, which starts your client once the socket is listening:
+
+```bash
+uv run --extra conformance plugrl-conformance \
+    --port 8000 --steps 20 --client "./my_client 127.0.0.1 8000 20"
+```
+
+It exits non-zero on a violation, so it can sit in a CI job. What it does not
+require, because SPEC.md does not, is listed at the top of the module.
 
 ## The protocol in one screen
 
@@ -87,8 +101,7 @@ pip install "plugrl-protocol @ git+https://github.com/PlugRL/plugrl-protocol.git
 
 Only Python clients that want the shared codec need this at all. A client in
 another language should implement [SPEC.md](SPEC.md) directly, which is what
-the C++ example does - and what `examples/conformance_server.py` will grade
-it against.
+the C++ example does - and what `plugrl-conformance` will grade it against.
 
 ## License
 

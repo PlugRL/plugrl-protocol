@@ -15,6 +15,17 @@ dependencies = [
     "msgpack (>=1.1.1,<2.0.0)",
 ]
 
+[project.optional-dependencies]
+# The conformance checker is a server, so it needs a WebSocket library that
+# the protocol package itself does not. It was an undeclared import until
+# now, which is why the documentation told people to pass `--with websockets`.
+conformance = [
+    "websockets (>=15.0.1,<16.0.0)",
+]
+
+[project.scripts]
+plugrl-conformance = "plugrl_protocol.conformance:main"
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.5.1,<5.0.0",

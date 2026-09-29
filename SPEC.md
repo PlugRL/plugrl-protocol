@@ -403,22 +403,32 @@ send. Anything else needs care, and the rule is narrower than it looks. What
 the servers read from it is in the next subsection.
 
 > **Gap - a non-empty `info` can close the connection.** The server unbatches
-> it by looking for the first value that is an ndarray and taking `m` from
-> that array's leading axis, then slicing every ndarray value by it; a
+> it by looking for the first value that is an ndarray - at the top level, or
+> one level into a nested map - and taking `m` from that array's leading
+> axis, then slicing every ndarray value by it; a
 > scalar or string sitting alongside is broadcast to all `m` environments,
 > which is the documented behaviour. But if *no* value is an ndarray, the
 > map is returned whole as a single per-environment entry regardless of `m`
 > - `{"task": "pick"}` with `m` = 2 yields one entry, and so does a
 > correctly batched msgpack *list* of length `m`, because a list is not an
-> ndarray. The handler then asserts that the per-environment count equals
-> the observation count, and an `AssertionError` there becomes a close with
-> **1011** and the reason `Internal server error.` (the
-> `assert len(info_list) == len(next_obs_list) or len(info_list) == 0` in
-> `websocket_agent_server.py`'s connection handler, and `unbatch_aggregate`
-> in `plugrl-server`'s `common/data_utils.py`).
+> ndarray (`unbatch_aggregate` in `plugrl-server`'s `common/data_utils.py`).
 >
-> So a non-empty `info` is safe only when at least one of its values is an
-> ndarray of length `m`, or when `m` is 1, where the mismatch cannot arise.
+> What follows changed with plugrl-server #108. The server now checks that
+> the observations, rewards, both flags and a non-empty `info` each hold `m`
+> entries. A mismatch is a protocol error: it closes that connection with
+> `1001` and `plugrl-server-resync`, as for any malformed message, and its
+> other clients go on. A client that sends the same `info` again after
+> reconnecting is closed again.
+>
+> Before #108 the check was an `assert` in the connection handler. Any
+> exception there is fatal to the server, so the connection closed with
+> **1011** and `Internal server error.`, and the server then stopped, for
+> every client. This paragraph used to mention only the closed connection.
+> plugrl-server's docs audit found the rest on 2026-09-29.
+>
+> So a non-empty `info` is safe only when at least one of its values, or a
+> value one level into a nested map, is an ndarray of length `m`, or when `m`
+> is 1, where the mismatch cannot arise.
 > The previous wording of this paragraph - that a value which is not
 > `m`-shaped is passed through to every environment unchanged - is true only
 > in the first of those cases. This has not bitten anyone because the

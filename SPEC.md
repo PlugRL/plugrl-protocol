@@ -399,7 +399,8 @@ short (time limit, external stop). A chunk is also flushed early when either
 flag is set, so a terminal transition is never buried inside a chunk.
 
 `info` is a free-form map. `{}` is valid and is what both reference clients
-send. Anything else needs care, and the rule is narrower than it looks.
+send. Anything else needs care, and the rule is narrower than it looks. What
+the servers read from it is in the next subsection.
 
 > **Gap - a non-empty `info` can close the connection.** The server unbatches
 > it by looking for the first value that is an ndarray and taking `m` from
@@ -422,6 +423,45 @@ send. Anything else needs care, and the rule is narrower than it looks.
 > `m`-shaped is passed through to every environment unchanged - is true only
 > in the first of those cases. This has not bitten anyone because the
 > reference clients send `{}`.
+
+#### What the servers read from `info`
+
+One key, `episode`, and only on a transition whose `terminated` or
+`truncated` is set. It carries the finished episode's statistics, each
+batched to `m` like any other value:
+
+```
+"episode": {
+  "r":    <ndarray, float kind, shape [m]>,   the episode's return
+  "l":    <ndarray, int kind, shape [m]>,     its length in environment steps
+  "s":    <ndarray "|b1" shape [m]>,          whether it succeeded
+  "mask": <ndarray "|b1" shape [m]> }         whether this entry is a finished episode
+```
+
+The training algorithms (`ppo`, `fpo`, `dppo`) average the episodes recorded
+since the last learn step into `rollout/reward`, `rollout/length` and
+`rollout/success`, and start again after it. `evaluation` also logs each
+episode as it finishes. An entry whose `mask` is false is skipped, and a
+missing `mask` counts as true. Nothing else in `info` is read.
+
+Leaving `episode` out is valid and changes nothing about training: the same
+transitions are stored and learned from. Only those metrics read 0. That is
+how it was found: a C++ client written from this document trained Pendulum
+normally while its logged return stayed at 0, until it sent `episode`
+([plugrl-server E44](https://github.com/PlugRL/plugrl-server/tree/main/experiments/e44-cpp-pendulum)).
+
+`plugrl-env-client` sends more than this, and the servers read none of the
+rest:
+- **`episode` is full-length.** Every environment in the batch has an entry;
+  `mask` is true only where the episode ended at this step, and the other
+  entries are zeros.
+- **`episode` has a fifth key,** `mean_success_rate`: a float over the
+  client's last 100 episodes.
+- **A top-level `is_step_success`** of shape `[m]` rides on every feedback.
+
+When the server looks for `m` in `info`, it also looks one level into a
+nested map. So `{"episode": {...}}` on its own is unbatched correctly, even
+though none of its top-level values is an ndarray.
 
 #### Terminal observations
 

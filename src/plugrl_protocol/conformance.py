@@ -351,8 +351,18 @@ class ProbeTracker:
         if not shapes_ok:
             return  # check_feedback has already said why
         for row, env in enumerate(env_indices.tolist()):
+            holding = env in self.pending and self.pending[env][1] is not None
+            if not holding and not self.fresh and env not in self.state:
+                # Never given an action on this connection, so the chunk it
+                # is feeding back came from an earlier one.
+                report.fail(
+                    "7.6 no feedback for an action that arrived on an earlier connection",
+                    f"env {env} sent feedback on a reconnected connection that "
+                    "never gave it an action",
+                )
+                continue
             if not report.require(
-                env in self.pending and self.pending[env][1] is not None,
+                holding,
                 "4.3 feedback names only envs that are holding an action",
                 f"env {env} had no action outstanding",
             ):

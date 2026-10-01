@@ -294,6 +294,7 @@ BUGS = (
     "resend-feedback",  # resends the feedback it was holding after a resync
     "ignore-stop",  # reconnects after plugrl-server-stop
     "ignore-text",  # carries on after a text frame instead of stopping
+    "stale-chunk",  # after a resync, feeds back chunks from the old connection
 )
 
 
@@ -347,13 +348,16 @@ def _probe_session(ws, envs: list[ProbeEnv], bug: str | None, state: dict) -> No
     env_indices = encode_array(range(n), "<i8", (n,))
     step_ids = [0] * n
 
-    def infer() -> bytes:
+    def infer(asking: list[int] | None = None) -> bytes:
+        asking = list(range(n)) if asking is None else asking
         return packer.pack(
             {
                 "message_type": INFER,
-                "data": probe_observation(envs, state["width"]),
-                "env_indices": env_indices,
-                "step_ids": encode_array(step_ids, "<i8", (n,)),
+                "data": probe_observation([envs[i] for i in asking], state["width"]),
+                "env_indices": encode_array(asking, "<i8", (len(asking),)),
+                "step_ids": encode_array(
+                    [step_ids[i] for i in asking], "<i8", (len(asking),)
+                ),
             }
         )
 
@@ -374,8 +378,15 @@ def _probe_session(ws, envs: list[ProbeEnv], bug: str | None, state: dict) -> No
         ws.send(packer.pack(state["held"]))
         state["held"] = None
 
+    first_on_connection = True
     while True:
-        ws.send(infer())
+        # The stale-chunk bug: back on a new connection, ask only for env 0,
+        # as if the other envs were still executing their old chunks.
+        asking = list(range(n))
+        if bug == "stale-chunk" and state["reconnects"] and first_on_connection:
+            asking = [0]
+        first_on_connection = False
+        ws.send(infer(asking))
         try:
             reply = _recv(ws)
         except TextFrame:
@@ -396,7 +407,7 @@ def _probe_session(ws, envs: list[ProbeEnv], bug: str | None, state: dict) -> No
         state["width"], state["stepped"] = width, True
 
         # Section 5.3: read env_ids when present, else the request's order.
-        env_ids = list(range(n))
+        env_ids = list(asking)
         if looks_like_array(reply["data"].get("env_ids")):
             env_ids = [int(v) for v in decode_array(reply["data"]["env_ids"])[0]]
 
@@ -418,6 +429,11 @@ def _probe_session(ws, envs: list[ProbeEnv], bug: str | None, state: dict) -> No
                     if bug == "reset-in-step":
                         env.reset()
                     break  # a chunk is flushed at the terminal step
+        for index in range(n):
+            if index not in asking:  # stale-chunk only: the old chunk's next step
+                reward, done = envs[index].step(envs[index].a or [0.0] * width)
+                rewards[index] += reward
+                terminated[index] = done
 
         feedback = {
             "message_type": FEEDBACK,
@@ -453,7 +469,13 @@ def _probe_session(ws, envs: list[ProbeEnv], bug: str | None, state: dict) -> No
 def run_probe(host: str, port: int, batch: int, bug: str | None) -> int:
     uri = f"ws://{host}:{port}"
     envs = [ProbeEnv(i) for i in range(batch)]
-    state = {"width": 1, "stepped": False, "held": None, "last_feedback": None}
+    state = {
+        "width": 1,
+        "stepped": False,
+        "held": None,
+        "last_feedback": None,
+        "reconnects": 0,
+    }
     stops_ignored = 0
     while True:
         try:
@@ -483,6 +505,7 @@ def run_probe(host: str, port: int, batch: int, bug: str | None) -> int:
                 state["held"] = (
                     state["last_feedback"] if bug == "resend-feedback" else None
                 )
+                state["reconnects"] += 1
                 print("the server asked for a resync; reconnecting")
                 time.sleep(0.2)
                 continue

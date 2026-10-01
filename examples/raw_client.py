@@ -432,15 +432,22 @@ def _probe_session(ws, envs: list[ProbeEnv], bug: str | None, state: dict) -> No
                 "info": {},
             },
         }
+        payload = packer.pack(feedback)
         state["last_feedback"] = feedback
-        ws.send(packer.pack(feedback))
 
+        # Reset before sending, not after. An episode that ended has ended in
+        # the environment whether or not its feedback gets through: if the
+        # server closes for a resync while this send is under way, the send
+        # raises, and an env reset only after a successful send would carry
+        # its finished episode onto the next connection. The payload above
+        # already holds the terminal observation.
         for index, env in enumerate(envs):
             if terminated[index]:
                 env.reset()
                 step_ids[index] = 0
             else:
                 step_ids[index] += 1
+        ws.send(payload)
 
 
 def run_probe(host: str, port: int, batch: int, bug: str | None) -> int:

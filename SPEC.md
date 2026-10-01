@@ -287,6 +287,7 @@ there today:
 | `policy` | the policy's class name |
 | `action_horizon` | `H`, the number of steps in an action chunk |
 | `action_dim` | the width of one action |
+| `features` | the optional features of section 10.1 the server implements, as a list of strings |
 
 `action_horizon` and `action_dim` are read off the policy, which is free
 not to declare them. **A key that is absent means the server does not know,
@@ -326,6 +327,11 @@ both keys **MUST** share the same leading dimension `n`.
 `n` **MAY** differ between successive `infer` messages on one connection.
 This is the normal case: the batch is whichever environments happen to need
 a chunk, and it is ragged by construction.
+
+An `infer` may also carry a `reuse` key, when the server offers the
+`reuse-feedback-obs` feature of section 10.1. A row it marks carries no
+observation: the server takes it from that environment's last `feedback`.
+Without the feature the key is not sent.
 
 > **Gap — `step_ids` is accepted and ignored.** The client sends, per
 > environment, the number of completed action chunks in the current episode,
@@ -655,7 +661,9 @@ A client conforms to version 1 if it:
       differently;
 - [ ] drops any held `feedback` when a connection closes, and never sends
       `feedback` for an `action` that arrived on an earlier connection;
-- [ ] treats a text frame as a fatal error.
+- [ ] treats a text frame as a fatal error;
+- [ ] uses a feature of section 10 only when the server lists it, and, for
+      `reuse-feedback-obs`, reuses only an observation the server holds.
 
 `plugrl-conformance` (`examples/conformance_server.py` is a shim for it) has
 two modes.
@@ -756,7 +764,10 @@ The checklist above is for clients. A training server conforms if it:
       message, two `infer`s in a row, or an `info` it cannot split per
       environment, and stays up for its other clients;
 - [ ] keeps env indices connection-scoped;
-- [ ] ends a run with 1001 and `plugrl-server-stop`.
+- [ ] ends a run with 1001 and `plugrl-server-stop`;
+- [ ] if it lists `reuse-feedback-obs`, answers an `infer` that reuses
+      observations, and closes with 1001 and `plugrl-server-resync` on one
+      that reuses an observation it does not hold.
 
 `plugrl-conformance-server` checks each of these from the client's side of
 the wire:
@@ -812,9 +823,17 @@ or Rust — carries across unchanged.
 ## 10. Versioning
 
 This is version 1. The server publishes it as `protocol_version` in the
-metadata message (section 5.1), but there is no negotiation: a client
-**MUST NOT** require the key, and the server does not adapt to a client's
-version.
+metadata message (section 5.1). A client **MUST NOT** require the key, and
+the server does not adapt to a client's version.
+
+What is negotiated is **features**. A feature is an addition to version 1
+that a client may use and a server may offer, and nothing else changes for
+either side when it is absent. The server lists the ones it implements in
+`metadata`'s `features`. A client uses a feature only if it is listed there,
+and a server that lists one still accepts every client that does not use it.
+So a new client works with an old server, and an old client with a new one.
+A change that cannot be made this way is breaking, and moves
+`protocol_version` to 2.
 
 > **Correction, 2026-09-11.** This paragraph used to say version 1 "has no
 > version field on the wire" and attributed to section 5.1 a remark that the
@@ -836,7 +855,45 @@ test rather than a deployment: `tests/test_wire_format.py` holds the four
 are not, and cannot be - this is the codec repository, and the axis order
 and the chunk-sum rule are properties of how the two sides behave, not of
 what the packer emits. Transposing the action chunk or redefining `rewards`
-as the last step's reward passes every test here. They are covered instead
-by `plugrl-env-client`'s
-`tests/test_protocol_alternation.py::TestChunkSemantics`, which is the same
-file section 8 points at.
+as the last step's reward passes every codec test here. They are checked
+instead by `plugrl-conformance --probe` (section 8.1), against any client.
+
+### 10.1 `reuse-feedback-obs`
+
+Without it, every observation crosses the link twice. The client sends it in
+the `feedback` that ends a chunk, as the step's next observation, and then
+sends the same observation again in the next `infer`, as the state the new
+chunk starts from. Only after a reset do the two differ. That second copy is
+the factor of two in plugrl-server's E43 cost model: an exchange costs a
+fixed latency plus twice the observation's bytes over the link.
+
+With the feature, the `infer` may say "the observation you already have":
+
+```
+{ "message_type": "infer",
+  "data":        <observation, batched to the rows that are not reused>,
+  "env_indices": <ndarray "<i8" shape [n]>,
+  "step_ids":    <ndarray "<i8" shape [n]>,
+  "reuse":       <ndarray "|b1" shape [n]> }
+```
+
+* `reuse[i]` true means env `env_indices[i]` sends no observation. Its
+  observation is the `obs` row of the last `feedback` that named it on this
+  connection.
+* `data` is batched to the rows where `reuse` is false, in their
+  `env_indices` order. With every row reused, its arrays have a leading
+  dimension of 0.
+* A client **MUST** send `reuse` false for an env whose last feedback on
+  this connection reported `terminated` or `truncated`, since that feedback
+  carried the terminal observation and not the reset one. It **MUST** also
+  send it false for an env with no feedback on this connection yet, which
+  includes every env just after a reconnect.
+* A server that lists the feature **MUST** close a connection whose `infer`
+  reuses an observation it does not hold - an env never fed back on this
+  connection, or one whose last feedback ended its episode - with 1001 and
+  `plugrl-server-resync`.
+* An `infer` without `reuse` sends every observation, as in version 1.
+
+Both checkers know the feature. `plugrl-conformance --features
+reuse-feedback-obs` offers it to a client and checks how the client uses it.
+`plugrl-conformance-server` exercises it when the server lists it.

@@ -45,6 +45,7 @@ import websockets.exceptions as ws_exceptions
 
 from plugrl_protocol import msgpack_numpy
 from plugrl_protocol.conformance import Report
+from plugrl_protocol.reuse import REUSE_FEEDBACK_OBS
 from plugrl_protocol.websocket_protocol import (
     SERVER_RESYNC_REASON,
     SERVER_STOP_REASON,
@@ -109,7 +110,19 @@ class Probe:
                 "10 protocol_version, when sent, is 1",
                 f"protocol_version was {version!r}",
             )
+        features = self.metadata.get("features")
+        if features is not None:
+            report.require(
+                isinstance(features, list)
+                and all(isinstance(f, str) for f in features),
+                "5.1 features, when sent, is a list of strings",
+                f"features was {features!r}",
+            )
         return True
+
+    def offers(self, feature: str) -> bool:
+        features = self.metadata.get("features")
+        return isinstance(features, list) and feature in features
 
     def observation(self, n: int, *, big: bool = False) -> dict:
         args = self.args
@@ -126,19 +139,26 @@ class Probe:
             )
         return {"images": images, "states": states, "text": np.asarray(["probe"] * n)}
 
-    async def infer(self, envs: list[int], *, big: bool = False) -> np.ndarray | None:
+    def infer_message(
+        self, envs: list[int], *, big: bool = False, reuse: list[bool] | None = None
+    ) -> bytes:
+        message = {
+            "message_type": str(MessageType.INFER),
+            # With reuse, only the rows the server does not already hold.
+            "data": self.observation(len(envs) - sum(reuse or []), big=big),
+            "env_indices": np.asarray(envs, dtype=np.int64),
+            "step_ids": np.zeros(len(envs), dtype=np.int64),
+        }
+        if reuse is not None:
+            message["reuse"] = np.asarray(reuse, dtype=np.bool_)
+        return self.packer.pack(message)
+
+    async def infer(
+        self, envs: list[int], *, big: bool = False, reuse: list[bool] | None = None
+    ) -> np.ndarray | None:
         """Send an infer and check the action that comes back."""
         report = self.report
-        await self.ws.send(
-            self.packer.pack(
-                {
-                    "message_type": str(MessageType.INFER),
-                    "data": self.observation(len(envs), big=big),
-                    "env_indices": np.asarray(envs, dtype=np.int64),
-                    "step_ids": np.zeros(len(envs), dtype=np.int64),
-                }
-            )
-        )
+        await self.ws.send(self.infer_message(envs, big=big, reuse=reuse))
         raw = await self.recv()
         if raw is None:
             return None
@@ -399,6 +419,55 @@ async def phase_scoping(args: argparse.Namespace, report: Report) -> None:
         await b.close()
 
 
+async def phase_reuse(args: argparse.Namespace, report: Report) -> None:
+    """Section 10.1, when the server offers it."""
+    probe = Probe(args, report)
+    if not await probe.connect():
+        return
+    if not probe.offers(REUSE_FEEDBACK_OBS):
+        await probe.close()
+        report.advise(
+            False,
+            "10.1 the server offers reuse-feedback-obs",
+            "it does not list the feature, so reuse is not checked",
+        )
+        return
+    report.ok("10.1 the server offers reuse-feedback-obs")
+    try:
+        if await probe.infer([0, 1]) is None:
+            return
+        await probe.feedback([0, 1], done=[False, True])
+        # Env 0 may reuse; env 1's episode ended, so it sends its reset obs.
+        if await probe.infer([0, 1], reuse=[True, False]) is None:
+            return
+        report.ok("10.1 the server answers an infer that reuses observations")
+        await probe.feedback([0, 1])
+        if await probe.infer([1, 0], reuse=[True, True]) is None:
+            return
+        report.ok("10.1 the server answers an infer with every row reused")
+        await probe.feedback([0, 1], done=[True, False])
+        # Env 0 just ended: what it would reuse is its terminal observation.
+        await probe.ws.send(probe.infer_message([0, 1], reuse=[True, False]))
+        await probe.expect_resync(
+            "10.1 a reuse the server cannot honour closes for a resync",
+            "an infer reusing env 0's observation right after its episode ended",
+        )
+    finally:
+        await probe.close()
+
+    fresh = Probe(args, report)
+    try:
+        if not await fresh.connect():
+            return
+        await fresh.ws.send(fresh.infer_message([0], reuse=[True]))
+        await fresh.expect_resync(
+            "10.1 a reuse the server cannot honour closes for a resync",
+            "an infer reusing the observation of an env never fed back on this connection",
+        )
+    finally:
+        await fresh.close()
+
+
 async def phase_stop(args: argparse.Namespace, report: Report) -> None:
     probe = Probe(args, report)
     if not await probe.connect():
@@ -444,6 +513,7 @@ async def run(args: argparse.Namespace) -> int:
         ("exchange", phase_exchange),
         ("errors", phase_errors),
         ("scoping", phase_scoping),
+        ("reuse", phase_reuse),
     ]
     if args.until_stop:
         phases.append(("stop", phase_stop))

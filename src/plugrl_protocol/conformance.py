@@ -64,6 +64,7 @@ import websockets.exceptions as ws_exceptions
 # for that reason, and because a checker worth running should be installable
 # rather than a path into somebody's checkout.
 from plugrl_protocol import msgpack_numpy
+from plugrl_protocol.reuse import REUSE_FEEDBACK_OBS, ObservationCache, ReuseError
 from plugrl_protocol.websocket_protocol import (
     SERVER_RESYNC_REASON,
     SERVER_STOP_REASON,
@@ -465,6 +466,7 @@ class ConformanceServer:
         probe: bool = False,
         scenario: str = "basic",
         report: Report | None = None,
+        features: tuple[str, ...] = (),
     ):
         self.horizon = horizon
         self.action_dim = action_dim
@@ -472,6 +474,8 @@ class ConformanceServer:
         self.steps = steps
         self.probe = probe
         self.scenario = scenario
+        self.features = tuple(features)
+        self.reused_rows = 0
         self.report = report if report is not None else Report()
         self.exchanges = 0
         self.connections = 0
@@ -486,6 +490,8 @@ class ConformanceServer:
             "action_horizon": self.horizon,
             "action_dim": self.action_dim,
         }
+        if self.features:
+            data["features"] = list(self.features)
         if self.probe:
             # A key no client knows, and big enough that a client which kept
             # its library's frame cap cannot receive this message. Section
@@ -525,6 +531,7 @@ class ConformanceServer:
         # to break - section 5.1 requires no key to be present.
         await websocket.send(packer.pack(self.metadata()))
 
+        cache = ObservationCache()
         awaiting = "infer"
         try:
             while self.exchanges < self.steps:
@@ -540,13 +547,14 @@ class ConformanceServer:
                     return
 
                 if kind == str(MessageType.INFER):
-                    n = self.check_infer(payload)
+                    n = self.check_infer(payload, cache)
                     if n is None:
                         return
                     await websocket.send(packer.pack(self.action_for(payload, n)))
                     awaiting = str(MessageType.FEEDBACK)
                 else:
                     self.check_feedback(payload)
+                    self._remember(cache, payload)
                     awaiting = str(MessageType.INFER)
                     self.exchanges += 1
         except ws_exceptions.ConnectionClosedOK:
@@ -613,6 +621,7 @@ class ConformanceServer:
         await websocket.send(packer.pack(self.metadata()))
 
         tracker = ProbeTracker(report, self.horizon, self.action_dim, fresh=index == 1)
+        cache = ObservationCache()
         awaiting = str(MessageType.INFER)
         opening = True
         try:
@@ -644,7 +653,7 @@ class ConformanceServer:
                     return
 
                 if kind == str(MessageType.INFER):
-                    if self.check_infer(payload) is None:
+                    if self.check_infer(payload, cache) is None:
                         return
                     tracker.on_infer(payload["env_indices"], payload["data"])
                     if self.scenario == "text":
@@ -676,6 +685,7 @@ class ConformanceServer:
                         return
                 else:
                     self.check_feedback(payload)
+                    self._remember(cache, payload)
                     tracker.on_feedback(payload["env_indices"], payload["data"])
                     awaiting = str(MessageType.INFER)
                     self.exchanges += 1
@@ -731,7 +741,21 @@ class ConformanceServer:
             )
         self.finished.set()
 
-    def check_infer(self, payload: dict) -> int | None:
+    @staticmethod
+    def _remember(cache: ObservationCache, payload: dict) -> None:
+        """What this feedback lets the next infer reuse (section 10.1)."""
+        try:
+            data = payload["data"]
+            cache.on_feedback(
+                payload["env_indices"],
+                data["obs"],
+                data["terminated"],
+                data["truncated"],
+            )
+        except (KeyError, TypeError, ReuseError):
+            pass  # check_feedback has already said what is wrong
+
+    def check_infer(self, payload: dict, cache: ObservationCache) -> int | None:
         report = self.report
         for key in ("data", "env_indices", "step_ids"):
             if not report.require(
@@ -762,6 +786,27 @@ class ConformanceServer:
             "5.2 step_ids matches env_indices in length",
             f"step_ids {getattr(payload['step_ids'], 'shape', None)} vs n={n}",
         )
+        reuse = payload.get("reuse")
+        if reuse is not None:
+            # Section 10.1. The full observation replaces the sent rows, so
+            # everything downstream sees what the server would see.
+            if not report.require(
+                REUSE_FEEDBACK_OBS in self.features,
+                "10.1 a client sends reuse only when the server offers it",
+                "the infer carried reuse, and this server's metadata lists no "
+                "such feature",
+            ):
+                return None
+            try:
+                payload["data"] = cache.complete(env_indices, payload["data"], reuse)
+            except ReuseError as exc:
+                report.fail(
+                    "10.1 a client reuses only an observation the server holds",
+                    str(exc),
+                )
+                return None
+            report.ok("10.1 a client reuses only an observation the server holds")
+            self.reused_rows += int(np.asarray(reuse).sum())
         check_observation(report, payload["data"], "infer", n)
         return n
 
@@ -857,6 +902,7 @@ async def run_scenario(args: argparse.Namespace, scenario: str, report: Report) 
         probe=args.probe,
         scenario=scenario,
         report=report,
+        features=tuple(args.features),
     )
     async with ws_server.serve(
         server.handle, args.host, args.port, compression=None, max_size=None
@@ -917,6 +963,14 @@ async def run_scenario(args: argparse.Namespace, scenario: str, report: Report) 
                     )
         elif args.probe and server.stopped:
             await asyncio.sleep(2)  # long enough to see an immediate reconnect
+    if REUSE_FEEDBACK_OBS in server.features and scenario != "text":
+        # A feature is optional, so not using it is no violation - but a
+        # client offered it and never using it is worth saying.
+        report.advise(
+            server.reused_rows > 0,
+            "10.1 a client offered reuse-feedback-obs uses it",
+            "it was offered the feature and sent every observation in full",
+        )
     return server.exchanges
 
 
@@ -964,6 +1018,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--features",
+        type=lambda text: [f for f in text.split(",") if f],
+        default=[],
+        help=(
+            "comma-separated optional features of SPEC.md section 10 to offer "
+            f"in the metadata; known: {REUSE_FEEDBACK_OBS}"
+        ),
+    )
+    parser.add_argument(
         "--client",
         default=None,
         metavar="COMMAND",
@@ -975,6 +1038,9 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+    unknown = set(args.features) - {REUSE_FEEDBACK_OBS}
+    if unknown:
+        parser.error(f"unknown features: {sorted(unknown)}")
     if args.scenario != "basic" and not args.probe:
         parser.error("--scenario needs --probe")
     if args.scenario == "all" and not args.client:

@@ -21,6 +21,8 @@ own known defects, and everything in it that can be checked by a test is.
 | [`SPEC.md`](SPEC.md) | the protocol, in full |
 | [`src/plugrl_protocol/`](src/plugrl_protocol/) | the message types and the msgpack codec — 101 lines |
 | [`src/plugrl_protocol/conformance.py`](src/plugrl_protocol/conformance.py) | `plugrl-conformance`, which grades a client clause by clause |
+| [`src/plugrl_protocol/server_conformance.py`](src/plugrl_protocol/server_conformance.py) | `plugrl-conformance-server`, which grades a server |
+| [`src/plugrl_protocol/reuse.py`](src/plugrl_protocol/reuse.py) | the server's half of the `reuse-feedback-obs` feature |
 | [`examples/`](examples/) | two env clients written against the spec, sharing no code with PlugRL |
 | [`tests/`](tests/) | the spec's checkable clauses, as tests |
 
@@ -104,6 +106,20 @@ Three things a first implementation usually gets wrong, all specified:
   `infer` it follows ([section 4.3](SPEC.md#43-the-env-sets-in-one-cycle-need-not-match));
 - the reward in a `feedback` is the **sum over the action chunk**, not the
   last step's ([section 5.4](SPEC.md#54-feedback--client-to-server)).
+
+## Optional features
+
+A server lists the additions to version 1 it implements in its metadata's
+`features`, and a client uses one only when it is listed, so an old client
+works with a new server and the other way round
+([section 10](SPEC.md#10-versioning)).
+
+There is one so far, `reuse-feedback-obs`
+([section 10.1](SPEC.md#101-reuse-feedback-obs)). Without it every
+observation crosses the link twice: once in the feedback that ends a chunk,
+and again in the next infer. With it the infer can say "the one you already
+have". `plugrl-conformance --features reuse-feedback-obs` offers it to a
+client, and `plugrl-conformance-server` exercises it when the server lists it.
 
 ## Relationship to openpi
 

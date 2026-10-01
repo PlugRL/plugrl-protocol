@@ -31,6 +31,11 @@ import websockets.exceptions as ws_exceptions
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 from plugrl_protocol import msgpack_numpy  # noqa: E402
+from plugrl_protocol.reuse import (  # noqa: E402
+    REUSE_FEEDBACK_OBS,
+    ObservationCache,
+    ReuseError,
+)
 from plugrl_protocol.websocket_protocol import (  # noqa: E402
     SERVER_RESYNC_REASON,
     SERVER_STOP_REASON,
@@ -45,6 +50,7 @@ BUGS = (
     "lenient",  # accepts a malformed infer instead of closing for a resync
     "crash-on-info",  # dies on an info it cannot split, as plugrl-server did before #108
     "plain-stop",  # ends the run with a plain close, no plugrl-server-stop
+    "lenient-reuse",  # answers an infer that reuses an observation it does not hold
 )
 
 
@@ -104,7 +110,7 @@ class ReferenceServer:
         self.connections: set = set()
         self.rng = np.random.default_rng(0)
 
-    def check_infer(self, message: dict) -> np.ndarray:
+    def check_infer(self, message: dict, cache: ObservationCache) -> np.ndarray:
         if message.get("message_type") != str(MessageType.INFER):
             raise ProtocolError(f"expected infer, got {message.get('message_type')!r}")
         if self.args.bug == "lenient":
@@ -113,7 +119,17 @@ class ReferenceServer:
             if key not in message:
                 raise ProtocolError(f"infer has no {key!r}")
         envs = _int_vector(message["env_indices"], "env_indices")
-        n = _leading(message["data"], "the observation")
+        observation = message["data"]
+        if "reuse" in message:
+            # Section 10.1: the rows it marks come from this connection's
+            # last feedback for those envs.
+            try:
+                observation = cache.complete(envs, observation, message["reuse"])
+            except ReuseError as exc:
+                if self.args.bug != "lenient-reuse":
+                    raise ProtocolError(str(exc)) from exc
+                return envs
+        n = _leading(observation, "the observation")
         if n not in (-1, len(envs)):
             raise ProtocolError(f"observation batch {n}, env_indices {len(envs)}")
         return envs
@@ -172,6 +188,7 @@ class ReferenceServer:
         packer = msgpack_numpy.Packer()
         self.connections.add(websocket)
         holding: set[int] = set()
+        cache = ObservationCache()
         try:
             if self.args.bug != "no-metadata":
                 await websocket.send(
@@ -183,6 +200,7 @@ class ReferenceServer:
                                 "server": "reference_server.py",
                                 "action_horizon": self.args.horizon,
                                 "action_dim": self.args.action_dim,
+                                "features": [REUSE_FEEDBACK_OBS],
                             },
                         }
                     )
@@ -191,15 +209,26 @@ class ReferenceServer:
                 raw = await websocket.recv()
                 if not isinstance(raw, bytes):
                     raise ProtocolError("a text frame")
-                envs = self.check_infer(msgpack_numpy.unpackb(raw))
+                envs = self.check_infer(msgpack_numpy.unpackb(raw), cache)
                 await websocket.send(packer.pack(self.action(envs)))
                 holding.update(envs.tolist())
                 raw = await websocket.recv()
                 if not isinstance(raw, bytes):
                     raise ProtocolError("a text frame")
-                for env in self.check_feedback(msgpack_numpy.unpackb(raw), holding):
+                feedback = msgpack_numpy.unpackb(raw)
+                for env in self.check_feedback(feedback, holding):
                     holding.discard(env)
                     self.frames += 1
+                data = feedback["data"]
+                try:
+                    cache.on_feedback(
+                        feedback["env_indices"],
+                        data["obs"],
+                        data["terminated"],
+                        data["truncated"],
+                    )
+                except ReuseError as exc:
+                    raise ProtocolError(str(exc)) from exc
                 if self.frames >= self.args.steps:
                     # serve() closes every connection, this one included,
                     # with the stop reason.

@@ -741,6 +741,44 @@ run, for that env, which checks time-major order, the step order, and the
 dtype. A `terminated` env must report `t = L_i`, its own terminal
 observation, and its next `infer` must report `t = 0`.
 
+### 8.2 Checking a server
+
+The checklist above is for clients. A training server conforms if it:
+
+- [ ] sends one `metadata` message, before anything else, on every
+      connection;
+- [ ] answers each `infer` with an `action` that is time-major, `[H, n, *da]`,
+      with `env_ids` equal to the `infer`'s `env_indices`, in order, and that
+      agrees with the `action_horizon` and `action_dim` it declared;
+- [ ] accepts what a client may send: a `feedback` env set unlike the
+      `infer`'s, an `n` that varies, and frames larger than 1 MiB;
+- [ ] closes a connection with 1001 and `plugrl-server-resync` on a malformed
+      message, two `infer`s in a row, or an `info` it cannot split per
+      environment, and stays up for its other clients;
+- [ ] keeps env indices connection-scoped;
+- [ ] ends a run with 1001 and `plugrl-server-stop`.
+
+`plugrl-conformance-server` checks each of these from the client's side of
+the wire:
+
+```bash
+plugrl-conformance-server --port 8000 --state-dim 3 --until-stop
+```
+
+It sends a states-only observation, `states["obs"]` of `--state-dim` values
+(`--state-key` and `--image-key` change that), so it can drive any server
+whose policy reads one. `examples/reference_server.py` is a server written
+against this document that trains nothing and passes every check. Its
+`--bug` option breaks one clause at a time, and
+`tests/test_server_conformance.py` checks that the grader names each one.
+`plugrl-server` passes too. Its version from before plugrl-server#108 fails
+two checks: an `info` it could not split closed that connection with 1011,
+and the server then refused new connections.
+
+What the server does with a frame is not visible from the wire, so section
+7.6's SHOULD - saying something about feedback for an environment it holds
+no step state for - is not checked.
+
 ---
 
 ## 9. Relationship to openpi

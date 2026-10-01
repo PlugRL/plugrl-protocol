@@ -56,6 +56,21 @@ time-major and in order. It also drives the connection: it speaks late, sends
 a metadata frame larger than 1 MiB, closes for a resync, stops the run, and
 answers with a text frame, starting the client once per scenario.
 
+## Checking a server
+
+The other direction: a client that drives a training server the way SPEC.md
+lets a client behave, and checks what comes back. That covers the action
+layout and `env_ids`, ragged batches, large frames, a resync close on each
+kind of malformed message with the server staying up afterwards, and the
+stop at the end of the run ([SPEC.md section 8.2](SPEC.md#82-checking-a-server)):
+
+```bash
+uv run --extra conformance plugrl-conformance-server --port 8000 --state-dim 3 --until-stop
+```
+
+[`examples/reference_server.py`](examples/reference_server.py) is a server
+written against the specification that trains nothing, and passes.
+
 ## The protocol in one screen
 
 Four message types, four lowercase strings. The server speaks first.

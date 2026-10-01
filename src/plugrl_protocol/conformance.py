@@ -752,7 +752,7 @@ class ConformanceServer:
                 data["terminated"],
                 data["truncated"],
             )
-        except (KeyError, TypeError, ReuseError):
+        except (KeyError, TypeError):
             pass  # check_feedback has already said what is wrong
 
     def check_infer(self, payload: dict, cache: ObservationCache) -> int | None:

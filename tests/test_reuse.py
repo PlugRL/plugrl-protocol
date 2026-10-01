@@ -99,6 +99,24 @@ def test_no_reuse_after_a_feedback_that_ended_the_episode(ended):
     _assert_same(got, _obs([30]))
 
 
+def test_a_feedback_it_cannot_split_is_not_refused_only_not_reusable():
+    """A version 1 client never reuses, so its feedback must not be refused here."""
+    cache = ObservationCache()
+    cache.on_feedback(
+        np.asarray([0, 1]),
+        {"states": {"obs": np.zeros((2, 1))}},  # no images, no text
+        np.zeros(2, bool),
+        np.zeros(2, bool),
+    )
+    with pytest.raises(ReuseError, match="could not be split"):
+        cache.complete(np.asarray([0]), _obs([]), np.asarray([True]))
+    # The next feedback it can split makes the env reusable again.
+    _feedback(cache, [0], [10])
+    _assert_same(
+        cache.complete(np.asarray([0]), _obs([]), np.asarray([True])), _obs([10])
+    )
+
+
 def test_no_reuse_for_an_env_never_fed_back():
     cache = ObservationCache()
     _feedback(cache, [0], [10])

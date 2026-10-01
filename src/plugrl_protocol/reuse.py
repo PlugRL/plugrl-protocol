@@ -12,7 +12,10 @@ and asks it for the full observation of every infer:
     cache.on_feedback(env_indices, data["obs"], data["terminated"], data["truncated"])
 
 `complete` raises `ReuseError` for a reuse SPEC.md does not allow, and the
-server then closes the connection for a resync.
+server then closes the connection for a resync. `on_feedback` never raises:
+validating a feedback is the server's business, and a version 1 client that
+never reuses must not be refused here for an observation this module cannot
+split. Its envs are only marked as not reusable.
 """
 
 from __future__ import annotations
@@ -105,16 +108,29 @@ class ObservationCache:
     """One connection's last feedback observation per env, where it may be reused."""
 
     def __init__(self) -> None:
-        # None: the env's last feedback ended its episode, so its observation
-        # is the terminal one, not where the next chunk starts.
-        self._rows: dict[int, dict | None] = {}
+        # Per env: its last feedback observation, or why it cannot be reused,
+        # usually that the feedback ended the episode, so the observation is
+        # the terminal one and not where the next chunk starts.
+        self._rows: dict[int, dict | str] = {}
 
     def on_feedback(self, env_indices, observation, terminated, truncated) -> None:
-        envs = [int(e) for e in np.asarray(env_indices).tolist()]
-        rows = _rows(observation, len(envs), "the feedback observation")
-        done = np.logical_or(np.asarray(terminated), np.asarray(truncated)).tolist()
-        for env, row, ended in zip(envs, rows, done):
-            self._rows[env] = None if ended else row
+        envs = [int(e) for e in np.asarray(env_indices).reshape(-1).tolist()]
+        try:
+            rows: list = _rows(observation, len(envs), "the feedback observation")
+            done = np.logical_or(np.asarray(terminated), np.asarray(truncated))
+            if done.shape != (len(envs),):
+                raise ReuseError(f"terminated and truncated are not [{len(envs)}]")
+        except (ReuseError, ValueError, TypeError) as exc:
+            for env in envs:
+                self._rows[env] = f"its last feedback could not be split by env: {exc}"
+            return
+        for env, row, ended in zip(envs, rows, done.tolist()):
+            self._rows[env] = (
+                "its last feedback ended its episode; the reset observation was "
+                "never sent"
+                if ended
+                else row
+            )
 
     def complete(self, env_indices, observation, reuse) -> dict:
         """The infer's observation for every env in `env_indices`."""
@@ -137,10 +153,8 @@ class ObservationCache:
                 raise ReuseError(
                     f"env {env} reuses an observation, but it has had no feedback here"
                 )
-            if self._rows[env] is None:
-                raise ReuseError(
-                    f"env {env} reuses an observation, but its last feedback ended its "
-                    "episode; the reset observation was never sent"
-                )
-            rows.append(self._rows[env])
+            held = self._rows[env]
+            if isinstance(held, str):
+                raise ReuseError(f"env {env} reuses an observation, but {held}")
+            rows.append(held)
         return _merge(rows, observation)

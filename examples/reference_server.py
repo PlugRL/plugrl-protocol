@@ -220,15 +220,12 @@ class ReferenceServer:
                     holding.discard(env)
                     self.frames += 1
                 data = feedback["data"]
-                try:
-                    cache.on_feedback(
-                        feedback["env_indices"],
-                        data["obs"],
-                        data["terminated"],
-                        data["truncated"],
-                    )
-                except ReuseError as exc:
-                    raise ProtocolError(str(exc)) from exc
+                cache.on_feedback(
+                    feedback["env_indices"],
+                    data["obs"],
+                    data["terminated"],
+                    data["truncated"],
+                )
                 if self.frames >= self.args.steps:
                     # serve() closes every connection, this one included,
                     # with the stop reason.

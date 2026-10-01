@@ -40,6 +40,22 @@ uv run --extra conformance plugrl-conformance \
 It exits non-zero on a violation, so it can sit in a CI job. What it does not
 require, because SPEC.md does not, is listed at the top of the module.
 
+That form watches one connection, so it sees the messages and not what the
+client did with them. To check that too, have the client run the probe
+environment of [SPEC.md section 8.1](SPEC.md#81-the-probe-environment), a
+few lines in any language, and add `--probe`:
+
+```bash
+uv run --extra conformance plugrl-conformance --probe --scenario all \
+    --client "./my_client --probe 127.0.0.1 8000"
+```
+
+The checker then works out from each feedback whether the client summed the
+chunk's reward, sent the terminal observation, and applied the actions
+time-major and in order. It also drives the connection: it speaks late, sends
+a metadata frame larger than 1 MiB, closes for a resync, stops the run, and
+answers with a text frame, starting the client once per scenario.
+
 ## The protocol in one screen
 
 Four message types, four lowercase strings. The server speaks first.

@@ -72,6 +72,15 @@ jobs:
             --port 8765 --steps 10 --horizon 4 --action-dim 7 --timeout 120 \
             --client "/tmp/plugrl_client 127.0.0.1 8765 10"
 
+      # SPEC section 8.1 for the C++ client too: what it does with each chunk,
+      # and how it handles a resync, a stop and a text frame.
+      - name: ... and in probe mode, in every scenario
+        run: |
+          uv run --extra conformance plugrl-conformance \
+            --probe --scenario all --port 8769 --steps 12 --horizon 4 \
+            --action-dim 3 --action-dtype float64 --timeout 120 \
+            --client "/tmp/plugrl_client --probe 127.0.0.1 8769 3"
+
       # The action dtype is the environment's and is never renegotiated, so a
       # client has to read the typestr. A client that hard-codes float32 still
       # passes every clause the server can see - it sends valid messages - and

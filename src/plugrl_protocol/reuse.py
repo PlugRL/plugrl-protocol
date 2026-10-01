@@ -83,19 +83,21 @@ def _merge(rows: list[dict], template) -> dict:
         out["text"] = np.concatenate(texts, axis=0)
     elif all(isinstance(t, list) for t in texts):
         out["text"] = [x for t in texts for x in t]
+    elif all(t is None for t in texts):
+        out["text"] = None
     elif all(isinstance(t, str) for t in texts) and len(set(texts)) == 1:
         out["text"] = texts[0]
     else:
+        # Rows that disagree on how text is sent: one string per row.
         flat: list = []
         for t in texts:
-            flat.extend(
-                t.tolist()
-                if isinstance(t, np.ndarray)
-                else t
-                if isinstance(t, list)
-                else [t]
-            )
-        out["text"] = [str(x) for x in flat]
+            if isinstance(t, np.ndarray):
+                flat.extend(t.tolist())
+            elif isinstance(t, list):
+                flat.extend(t)
+            else:
+                flat.append(t)
+        out["text"] = ["" if x is None else str(x) for x in flat]
     return out
 
 

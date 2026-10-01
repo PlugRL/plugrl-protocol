@@ -77,6 +77,7 @@ def test_a_conforming_client_passes_every_scenario():
         ("resend-feedback", "resync", "7.6 a reconnecting client drops held feedback and starts with infer"),
         ("ignore-stop", "basic", "7.1 a client does not reconnect after plugrl-server-stop"),
         ("ignore-text", "text", "7.4 a client treats a text frame as fatal"),
+        ("stale-chunk", "resync", "7.6 no feedback for an action that arrived on an earlier connection"),
     ],
 )  # fmt: skip
 def test_each_broken_rule_is_named(bug, scenario, clause):

@@ -25,6 +25,7 @@ conformance = [
 
 [project.scripts]
 plugrl-conformance = "plugrl_protocol.conformance:main"
+plugrl-conformance-server = "plugrl_protocol.server_conformance:main"
 
 [dependency-groups]
 dev = [

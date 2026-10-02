@@ -28,8 +28,10 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+      # With the checker's extra: tests/test_conformance_probe.py runs it, and
+      # skips without websockets.
       - name: Sync
-        run: uv sync --frozen
+        run: uv sync --frozen --extra conformance
       - name: Test
         run: uv run pytest -q
 
@@ -94,3 +96,13 @@ jobs:
           uv run --extra conformance plugrl-conformance \
             --port 8767 --steps 10 --horizon 3 --action-dim 5 --timeout 120 \
             --client "python examples/raw_client.py --host 127.0.0.1 --port 8767 --steps 10"
+
+      # Section 8.1: the probe env lets the checker see what the client did
+      # with each chunk, and the scenarios drive a resync, a stop and a text
+      # frame. The client is started once per scenario.
+      - name: ... and in probe mode, in every scenario
+        run: |
+          uv run --extra conformance plugrl-conformance \
+            --probe --scenario all --port 8768 --steps 12 --horizon 4 \
+            --action-dim 3 --action-dtype float64 --timeout 120 \
+            --client "python examples/raw_client.py --probe --batch 3 --host 127.0.0.1 --port 8768"

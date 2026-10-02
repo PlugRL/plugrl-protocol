@@ -657,38 +657,87 @@ A client conforms to version 1 if it:
       `feedback` for an `action` that arrived on an earlier connection;
 - [ ] treats a text frame as a fatal error.
 
-`examples/conformance_server.py` checks the clauses above that one passive
-connection can observe - framing, alternation, env indices, observation
-shape, and the feedback payload's keys, dtypes and lengths - and reports
-what it accepts but cannot require as a note rather than a failure. Both
-reference clients pass it with one note: they send `text` as a msgpack
-string array rather than a `<U` array, which is the section 3.4 Gap.
+`plugrl-conformance` (`examples/conformance_server.py` is a shim for it) has
+two modes.
 
-It does not check the rest, and an unexercised clause leaves no trace in its
-report: every clause string in the harness names section 2, 3.4, 4.2, 4.4,
-5.2, 5.4 or 7.5 - or is the catch-all `connection` - and the report iterates
-only the clauses it touched. A client that breaks all of the following still
-prints "no violations":
+**By default it watches one connection.** It checks what that connection
+shows: framing, alternation, env indices, observation shape, and the
+feedback payload's keys, dtypes and lengths. It reports what it accepts but
+cannot require as a note rather than a failure. Both reference clients pass
+it with one note: they send `text` as a msgpack string array rather than a
+`<U` array, which is the section 3.4 Gap. An unexercised clause leaves no
+trace in its report, and from one connection to an unknown environment it
+cannot tell what the client did with an action.
 
-* the connection options of section 1.1 - the harness sets `compression` and
-  `max_size` on its own side and never inspects what the client offered;
-* reading `metadata` before sending anything;
-* chunk-summed reward, and the terminal observation on a done step;
-* handling the two close reasons differently, dropping held `feedback`
-  across a reconnect, and treating a text frame as fatal - these three need
-  the harness to drive a close or send a text frame, which is more than
-  watching one well-behaved connection.
+**With `--probe` the client runs the probe environment of section 8.1.**
+From each feedback the checker then works out how many steps of the chunk
+the client ran and which action it applied last, and it drives the
+connection instead of watching it. In that mode it checks every clause of
+the list above except these:
 
-What no server-side harness can see at all is what a client does with the
-`action` it receives. Honouring the time-major layout and consuming the
-horizon in order are checked on the Python side, by `plugrl-env-client`'s
-`tests/test_protocol_alternation.py::TestChunkSemantics`. Reading `env_ids`
-is not checked anywhere: `plugrl-server` sends the key, and the Python
-client discards it - `infer()` returns the whole `data` map and its only
-caller takes `["action"]` out of it, and the string `env_ids` does not
-occur anywhere in `plugrl-env-client`'s source or tests. The clause above
-is a rule for clients in other languages, with no reference implementation
-behind it.
+* reading `env_ids`: section 4.3 requires them to equal the `infer`'s
+  `env_indices`, so a client that ignores them behaves identically;
+* tolerating a `feedback` env set that differs from the `infer` set: the
+  client chooses its sets, and the server cannot make them differ;
+* requiring no particular `metadata` key: the checker sends all of them;
+* dropping held `feedback` after a close other than a resync.
+
+`--scenario` selects how the connection is driven:
+
+* **`basic`**: the checker waits 0.3 s before speaking, so a client that
+  sends first is caught. Its `metadata` carries an unknown 2 MiB key, so a
+  client that kept its library's 1 MiB frame cap cannot receive it, and one
+  that rejects unknown keys fails. It checks that the handshake did not offer
+  `permessage-deflate`. It answers every `infer` with float64, time-major
+  actions whose values encode their position. Once the exchanges are done it
+  closes with `plugrl-server-stop`, after which the client must exit 0 and
+  not reconnect.
+* **`resync`**: as `basic`, but halfway through it closes with
+  `plugrl-server-resync` right after sending an `action`, so the client is
+  holding a `feedback`. The client must reconnect, and its first message on
+  the new connection must be an `infer`.
+* **`text`**: it answers the first `infer` with a text frame, which the
+  client must treat as fatal: it closes the connection and sends nothing
+  more.
+* **`all`**: each in turn, starting the client once per scenario.
+
+`examples/raw_client.py --probe` passes all three with the same note. Its
+`--bug` option breaks one clause at a time, and `tests/test_conformance_probe.py`
+checks that the checker names each one.
+
+### 8.1 The probe environment
+
+A client that wants its handling of actions checked, and not only its
+messages, runs this environment for `plugrl-conformance --probe`. It needs
+no simulator, and is a few lines in any language.
+
+* The client runs `n` probe envs, with indices `0` to `n - 1` as its
+  `env_indices`. Indices stay below 1000.
+* Env `i`'s episode lasts `L_i = 3 + 2 * (i mod 3)` steps: 3, 5, 7, 3, 5,
+  ... So within one chunk, different envs end their episodes at different
+  steps.
+* Its observation has no images and two states:
+  * `t`: float64 `[n, 1]`, the number of steps taken in the current
+    episode, `0` after a reset;
+  * `a`: float64 `[n, d]`, the action the env applied on its last step,
+    where `d` is the action width. Its value after a reset is not checked,
+    and before the client knows the width it may have `d = 1`.
+
+  `text` may be anything.
+* A step applies the action, adds 1 to `t`, stores the action in `a`, and
+  pays a reward of 1. It reports `terminated` when `t` reaches `L_i`. The
+  probe env never truncates.
+* A reset sets `t` back to `0`.
+
+The checker sends action values that encode their position: element
+`[k, row, d]` for env `j` is `10000 k + 10 j + d`. A feedback therefore says
+exactly what the client did with the chunk. `t` minus the `t` of the
+`infer` it answered is the number of steps it ran, which must be between 1
+and `H`. With a reward of 1 per step, the reward must equal that number,
+which is the chunk-sum rule. `a` must be the chunk's action at the last step
+run, for that env, which checks time-major order, the step order, and the
+dtype. A `terminated` env must report `t = L_i`, its own terminal
+observation, and its next `infer` must report `t = 0`.
 
 ---
 

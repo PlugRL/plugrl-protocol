@@ -608,18 +608,17 @@ environment it has no step state for. That condition has exactly one cause -
 the connection was replaced mid-run - and storing the transition silently
 puts a hole in the training data that nothing downstream can detect.
 
-> **Gap - the reference client breaks this on one path.**
-> `plugrl-env-client` run with `--reconnect-on-server-stop` resends the
-> `feedback` it was holding instead of dropping it, when the close it hit was
-> the server's `plugrl-server-stop`. In `websocket_env_client_agent.py`,
-> `feedback()`'s `SERVER_STOP_REASON` branch `continue`s its retry loop,
-> which opens a new connection, reads fresh metadata, and re-sends the same
-> payload - the exact resend the historical note below says this section
-> exists to prevent. Every other close path in that method returns and drops
-> the transition, and `tests/test_reconnect_drops_feedback.py` covers three
-> of them (a keepalive timeout, a plain 1000 close, a resync) but not this
-> one. It is the only path in the reference client that violates the **MUST**
-> above.
+> **Correction, 2026-10-01.** This section carried a Gap until today:
+> `plugrl-env-client` run with `--reconnect-on-server-stop` resent the
+> `feedback` it was holding after a `plugrl-server-stop` close, instead of
+> dropping it. plugrl-env-client#15 removed that path. `feedback()` never
+> reconnects now: it raises `ConnectionReplaced`, and the rollout drops every
+> chunk in flight and asks again for all its environments. The Gap was also
+> incomplete. The probe checker (section 8.1) found a second violation it did
+> not mention: after any reconnect, environments in the middle of a chunk
+> kept executing it, then sent its `feedback` on the new connection. #15
+> fixed that too. `plugrl-conformance --probe --scenario resync` checks both,
+> and plugrl-env-client's CI runs it.
 
 > **Where reconnects come from.** Nothing in this protocol causes them and
 > nothing in it can prevent them: a suspended laptop, a flaky link, an

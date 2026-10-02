@@ -73,6 +73,10 @@ def test_a_conforming_server_passes_every_phase():
         "7.2 the server survives a client's protocol error",
         "4.4 env indices are connection-scoped: two clients can both use 0",
         "7.1 the server ends a run with plugrl-server-stop",
+        "10.1 the server offers reuse-feedback-obs",
+        "10.1 the server answers an infer that reuses observations",
+        "10.1 the server answers an infer with every row reused",
+        "10.1 a reuse the server cannot honour closes for a resync",
     ):
         assert f"ok    {clause}" in result.stdout, clause
 
@@ -87,6 +91,7 @@ def test_a_conforming_server_passes_every_phase():
         ("lenient", (), "7.2 a malformed infer closes the connection for a resync"),
         ("crash-on-info", (), "7.2 the server survives a client's protocol error"),
         ("plain-stop", ("--until-stop",), "7.1 the server ends a run with plugrl-server-stop"),
+        ("lenient-reuse", (), "10.1 a reuse the server cannot honour closes for a resync"),
     ],
 )  # fmt: skip
 def test_each_broken_rule_is_named(bug, extra, clause):

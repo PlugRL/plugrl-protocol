@@ -28,7 +28,9 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _check(scenario: str, bug: str | None = None) -> subprocess.CompletedProcess:
+def _check(
+    scenario: str, bug: str | None = None, *, features: str = ""
+) -> subprocess.CompletedProcess:
     port = _free_port()
     client = f'"{sys.executable}" "{CLIENT}" --probe --batch 3 --port {port}'
     if bug:
@@ -40,6 +42,7 @@ def _check(scenario: str, bug: str | None = None) -> subprocess.CompletedProcess
             "--steps", "8", "--horizon", "4", "--action-dim", "3",
             "--action-dtype", "float64", "--timeout", "40",
             "--client", client,
+            *(["--features", features] if features else []),
         ],
         capture_output=True,
         text=True,
@@ -62,6 +65,40 @@ def test_a_conforming_client_passes_every_scenario():
         "7.1 a client exits cleanly on plugrl-server-stop",
     ):
         assert f"ok    {clause}" in result.stdout, clause
+
+
+def test_a_client_offered_reuse_uses_it_and_still_conforms():
+    """SPEC section 10.1: the rows it reuses are the ones the server holds."""
+    result = _check("all", features="reuse-feedback-obs")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (
+        "ok    10.1 a client reuses only an observation the server holds"
+        in result.stdout
+    )
+    assert "ok    10.1 a client offered reuse-feedback-obs uses it" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("bug", "features", "clause"),
+    [
+        (
+            "reuse-unoffered",
+            "",
+            "10.1 a client sends reuse only when the server offers it",
+        ),
+        (
+            "reuse-after-reset",
+            "reuse-feedback-obs",
+            "10.1 a client reuses only an observation the server holds",
+        ),
+    ],
+)
+def test_each_misuse_of_reuse_is_named(bug, features, clause):
+    result = _check("basic", bug, features=features)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert f"FAIL  {clause}" in result.stdout, result.stdout
 
 
 @pytest.mark.parametrize(

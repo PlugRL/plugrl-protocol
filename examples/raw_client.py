@@ -295,7 +295,11 @@ BUGS = (
     "ignore-stop",  # reconnects after plugrl-server-stop
     "ignore-text",  # carries on after a text frame instead of stopping
     "stale-chunk",  # after a resync, feeds back chunks from the old connection
+    "reuse-unoffered",  # sends reuse although the server did not offer it
+    "reuse-after-reset",  # reuses an observation its last feedback ended the episode on
 )
+
+REUSE_FEEDBACK_OBS = "reuse-feedback-obs"  # SPEC.md section 10.1
 
 
 class TextFrame(Exception):
@@ -347,19 +351,29 @@ def _probe_session(ws, envs: list[ProbeEnv], bug: str | None, state: dict) -> No
     n = len(envs)
     env_indices = encode_array(range(n), "<i8", (n,))
     step_ids = [0] * n
+    # Section 10.1: which envs' last feedback on this connection carries the
+    # observation their next chunk starts from. None until this connection
+    # has given any feedback, and never after a reset.
+    reusable = [False] * n
+    offered = False
 
     def infer(asking: list[int] | None = None) -> bytes:
         asking = list(range(n)) if asking is None else asking
-        return packer.pack(
-            {
-                "message_type": INFER,
-                "data": probe_observation([envs[i] for i in asking], state["width"]),
-                "env_indices": encode_array(asking, "<i8", (len(asking),)),
-                "step_ids": encode_array(
-                    [step_ids[i] for i in asking], "<i8", (len(asking),)
-                ),
-            }
-        )
+        reuse = [offered and reusable[i] for i in asking]
+        message = {
+            "message_type": INFER,
+            # Only the rows the server does not already hold.
+            "data": probe_observation(
+                [envs[i] for i, r in zip(asking, reuse) if not r], state["width"]
+            ),
+            "env_indices": encode_array(asking, "<i8", (len(asking),)),
+            "step_ids": encode_array(
+                [step_ids[i] for i in asking], "<i8", (len(asking),)
+            ),
+        }
+        if offered or bug == "reuse-unoffered":
+            message["reuse"] = encode_array(reuse, "|b1", (len(asking),))
+        return packer.pack(message)
 
     if bug == "early-infer":
         ws.send(infer())
@@ -372,6 +386,8 @@ def _probe_session(ws, envs: list[ProbeEnv], bug: str | None, state: dict) -> No
     width = (meta.get("data") or {}).get("action_dim")
     if isinstance(width, int) and width > 0 and not state["stepped"]:
         state["width"] = width
+    features = (meta.get("data") or {}).get("features") or []
+    offered = REUSE_FEEDBACK_OBS in features and not state["no_reuse"]
 
     # A correct client dropped this when the old connection closed.
     if state["held"] is not None:
@@ -458,6 +474,10 @@ def _probe_session(ws, envs: list[ProbeEnv], bug: str | None, state: dict) -> No
         # its finished episode onto the next connection. The payload above
         # already holds the terminal observation.
         for index, env in enumerate(envs):
+            # The feedback names every env, so each one's next infer may
+            # reuse its observation - unless the episode ended, when the
+            # reset observation has not been sent yet.
+            reusable[index] = not terminated[index] or bug == "reuse-after-reset"
             if terminated[index]:
                 env.reset()
                 step_ids[index] = 0
@@ -466,7 +486,9 @@ def _probe_session(ws, envs: list[ProbeEnv], bug: str | None, state: dict) -> No
         ws.send(payload)
 
 
-def run_probe(host: str, port: int, batch: int, bug: str | None) -> int:
+def run_probe(
+    host: str, port: int, batch: int, bug: str | None, no_reuse: bool = False
+) -> int:
     uri = f"ws://{host}:{port}"
     envs = [ProbeEnv(i) for i in range(batch)]
     state = {
@@ -475,6 +497,7 @@ def run_probe(host: str, port: int, batch: int, bug: str | None) -> int:
         "held": None,
         "last_feedback": None,
         "reconnects": 0,
+        "no_reuse": no_reuse,
     }
     stops_ignored = 0
     while True:
@@ -527,9 +550,14 @@ def main() -> int:
     p.add_argument(
         "--bug", choices=BUGS, default=None, help="break one rule on purpose"
     )
+    p.add_argument(
+        "--no-reuse",
+        action="store_true",
+        help="send every observation even when the server offers reuse-feedback-obs",
+    )
     a = p.parse_args()
     if a.probe:
-        return run_probe(a.host, a.port, a.batch, a.bug)
+        return run_probe(a.host, a.port, a.batch, a.bug, a.no_reuse)
     return run(a.host, a.port, a.steps, a.batch)
 
 

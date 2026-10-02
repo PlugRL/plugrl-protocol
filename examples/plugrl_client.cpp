@@ -15,6 +15,12 @@
 // Build:  g++ -std=c++17 -O2 -o plugrl_client plugrl_client.cpp
 // Run:    ./plugrl_client 127.0.0.1 8000 20        # host port steps
 //         ./plugrl_client 127.0.0.1 8000 20 1 224 2  # ... batch img cams
+//         ./plugrl_client --probe 127.0.0.1 8000 3   # SPEC 8.1, host port batch
+//
+// With --probe it runs the probe environment of SPEC.md section 8.1 until the
+// server stops the run, executing each action chunk as section 5.3 says and
+// handling the close reasons of section 7. That is what
+// `plugrl-conformance --probe` checks.
 
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -35,9 +41,28 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
+
+// SPEC section 7: why the server closed. The reason is how a client tells a
+// finished run (plugrl-server-stop) from a request to resync.
+struct ServerClosed : std::runtime_error {
+  int code;
+  std::string reason;
+  ServerClosed(int c, std::string r)
+      : std::runtime_error("server closed the connection (" + std::to_string(c) +
+                           (r.empty() ? std::string() : ", " + r) + ")"),
+        code(c),
+        reason(std::move(r)) {}
+};
+
+// SPEC section 7.4: a text frame stands for a server-side error.
+struct TextFrame : std::runtime_error {
+  using std::runtime_error::runtime_error;
+};
 
 // ---------------------------------------------------------------- SHA-1
 // RFC 3174. Needed only to verify the server's Sec-WebSocket-Accept.
@@ -535,7 +560,13 @@ class WebSocket {
       if (masked)
         for (uint64_t i = 0; i < len; ++i) chunk[i] ^= key[i % 4];
 
-      if (opcode == 0x8) throw std::runtime_error("server closed the connection");
+      if (opcode == 0x8) {
+        // RFC 6455 section 5.5.1: a two-byte status code, then the reason.
+        int code = chunk.size() >= 2
+                       ? (static_cast<uint8_t>(chunk[0]) << 8) | static_cast<uint8_t>(chunk[1])
+                       : 1005;
+        throw ServerClosed(code, chunk.size() > 2 ? chunk.substr(2) : std::string());
+      }
       if (opcode == 0x9) { send_pong(chunk); continue; }
       if (opcode == 0xa) continue;
 
@@ -546,8 +577,7 @@ class WebSocket {
       // msgpack type 0x47".
       if (first_data_frame) {
         if (opcode == 0x1)
-          throw std::runtime_error("server sent a text frame: " +
-                                   chunk.substr(0, 2048));
+          throw TextFrame("server sent a text frame: " + chunk.substr(0, 2048));
         if (opcode != 0x2)
           throw std::runtime_error("unexpected websocket opcode " +
                                    std::to_string(static_cast<int>(opcode)));
@@ -824,9 +854,205 @@ int run(const std::string& host, int port, int steps, int batch) {
   return 0;
 }
 
+// ---------------------------------------------------------------- probe mode
+//
+// SPEC section 8.1. Env i counts the steps of its episode in t, remembers the
+// action it applied last in a, pays 1 per step, and ends its episode,
+// terminated, at t = 3 + 2 * (i % 3). plugrl-conformance --probe works out
+// from each feedback what the client did with the chunk it was sent.
+
+struct ProbeEnv {
+  int length = 3;
+  int t = 0;
+  std::vector<double> a;
+};
+
+void pack_probe_observation(Packer& p, const std::vector<ProbeEnv>& envs, int64_t width) {
+  int64_t n = static_cast<int64_t>(envs.size());
+  std::vector<double> t, a;
+  for (const auto& env : envs) {
+    t.push_back(env.t);
+    if (env.a.empty()) a.insert(a.end(), static_cast<size_t>(width), 0.0);
+    else a.insert(a.end(), env.a.begin(), env.a.end());
+  }
+  p.map(3);
+  p.str("images"); p.map(0);
+  p.str("states"); p.map(2);
+  p.str("t"); pack_ndarray(p, pack_f8(t), "<f8", {n, 1});
+  p.str("a"); pack_ndarray(p, pack_f8(a), "<f8", {n, width});
+  p.str("text"); p.array(envs.size());
+  for (size_t i = 0; i < envs.size(); ++i) p.str("probe");
+}
+
+int64_t as_int(const ValuePtr& v) {
+  return v->kind == Value::Kind::Int ? v->i : static_cast<int64_t>(v->u);
+}
+
+// One connection, until the server closes it - which throws ServerClosed.
+void probe_session(WebSocket& ws, std::vector<ProbeEnv>& envs, int64_t& width,
+                   bool& stepped) {
+  const int64_t n = static_cast<int64_t>(envs.size());
+
+  // The server speaks first. Unknown keys - and the probe server sends a
+  // 2 MiB one - are ignored, as section 5.1 says.
+  auto meta_raw = ws.recv_message();
+  Unpacker mu(reinterpret_cast<const uint8_t*>(meta_raw.data()), meta_raw.size());
+  auto meta = mu.parse();
+  auto mt = meta->find("message_type");
+  if (!mt || mt->s != "metadata") throw std::runtime_error("expected metadata");
+  auto md = meta->find("data");
+  auto ad = md ? md->find("action_dim") : nullptr;
+  if (ad && !stepped &&
+      (ad->kind == Value::Kind::Int || ad->kind == Value::Kind::UInt) && as_int(ad) > 0)
+    width = as_int(ad);
+
+  std::vector<int64_t> env_idx(static_cast<size_t>(n));
+  for (int64_t i = 0; i < n; ++i) env_idx[static_cast<size_t>(i)] = i;
+  std::vector<int64_t> step_ids(static_cast<size_t>(n), 0);
+
+  for (;;) {
+    Packer p;
+    p.map(4);
+    p.str("message_type"); p.str("infer");
+    p.str("data");         pack_probe_observation(p, envs, width);
+    p.str("env_indices");  pack_ndarray(p, pack_i8(env_idx), "<i8", {n});
+    p.str("step_ids");     pack_ndarray(p, pack_i8(step_ids), "<i8", {n});
+    ws.send_binary(p.data());
+
+    auto reply = ws.recv_message();
+    Unpacker up(reinterpret_cast<const uint8_t*>(reply.data()), reply.size());
+    auto msg = up.parse();
+    auto type = msg->find("message_type");
+    if (!type || type->s != "action") throw std::runtime_error("expected action");
+    auto data = msg->find("data");
+    auto action = data ? data->find("action") : nullptr;
+    auto dtype = action ? action->find("dtype") : nullptr;
+    auto shape = action ? action->find("shape") : nullptr;
+    auto blob = action ? action->find("data") : nullptr;
+    if (!dtype || !shape || !blob || shape->arr.size() < 2)
+      throw std::runtime_error("malformed action");
+
+    // Time-major, [H, n, *da], in the dtype the typestr names.
+    TypeStr at = parse_typestr(dtype->s);
+    const int64_t horizon = as_int(shape->arr[0]);
+    const int64_t rows = as_int(shape->arr[1]);
+    int64_t w = 1;
+    for (size_t i = 2; i < shape->arr.size(); ++i) w *= as_int(shape->arr[i]);
+    width = w;
+    stepped = true;
+
+    // Section 5.3: read env_ids when present, else the request's own order.
+    std::vector<int64_t> ids = env_idx;
+    auto eid = data->find("env_ids");
+    if (eid && eid->find("data") && eid->find("dtype")) {
+      TypeStr it = parse_typestr(eid->find("dtype")->s);
+      const std::string& raw = eid->find("data")->s;
+      ids.clear();
+      for (size_t i = 0; i < raw.size() / static_cast<size_t>(it.size); ++i)
+        ids.push_back(static_cast<int64_t>(read_element(raw, i, it)));
+    }
+
+    std::vector<float> rewards(static_cast<size_t>(n), 0.0f);
+    std::string terminated(static_cast<size_t>(n), '\0');
+    for (int64_t row = 0; row < rows && row < static_cast<int64_t>(ids.size()); ++row) {
+      const int64_t index = ids[static_cast<size_t>(row)];
+      if (index < 0 || index >= n)
+        throw std::runtime_error("action for an env this client does not run");
+      ProbeEnv& env = envs[static_cast<size_t>(index)];
+      for (int64_t k = 0; k < horizon; ++k) {
+        const size_t base = static_cast<size_t>((k * rows + row) * w);
+        env.a.assign(static_cast<size_t>(w), 0.0);
+        for (int64_t d = 0; d < w; ++d)
+          env.a[static_cast<size_t>(d)] = read_element(blob->s, base + static_cast<size_t>(d), at);
+        env.t += 1;
+        rewards[static_cast<size_t>(index)] += 1.0f;  // the chunk's sum
+        if (env.t == env.length) {
+          terminated[static_cast<size_t>(index)] = '\x01';
+          break;  // a chunk is flushed at the terminal step
+        }
+      }
+    }
+
+    Packer fb;
+    fb.map(4);
+    fb.str("message_type"); fb.str("feedback");
+    fb.str("env_indices");  pack_ndarray(fb, pack_i8(env_idx), "<i8", {n});
+    fb.str("step_ids");     pack_ndarray(fb, pack_i8(step_ids), "<i8", {n});
+    fb.str("data");
+    fb.map(5);
+    // Before any reset: the observation the terminal step returned.
+    fb.str("obs");        pack_probe_observation(fb, envs, width);
+    fb.str("rewards");    pack_ndarray(fb, pack_f4(rewards), "<f4", {n});
+    fb.str("terminated"); pack_ndarray(fb, terminated, "|b1", {n});
+    fb.str("truncated");  pack_ndarray(fb, std::string(static_cast<size_t>(n), '\0'), "|b1", {n});
+    fb.str("info");       fb.map(0);
+
+    // Reset before sending: an episode that ended has ended in the
+    // environment whether or not its feedback gets through, so a close
+    // arriving now must not carry it onto the next connection. The packed
+    // feedback above already holds the terminal observation.
+    for (int64_t i = 0; i < n; ++i) {
+      ProbeEnv& env = envs[static_cast<size_t>(i)];
+      if (terminated[static_cast<size_t>(i)]) {
+        env.t = 0;
+        env.a.clear();
+        step_ids[static_cast<size_t>(i)] = 0;
+      } else {
+        step_ids[static_cast<size_t>(i)] += 1;
+      }
+    }
+    ws.send_binary(fb.data());
+  }
+}
+
+int run_probe(const std::string& host, int port, int batch) {
+  std::vector<ProbeEnv> envs(static_cast<size_t>(batch));
+  for (int i = 0; i < batch; ++i) envs[static_cast<size_t>(i)].length = 3 + 2 * (i % 3);
+  int64_t width = 1;
+  bool stepped = false;
+  for (;;) {
+    try {
+      WebSocket ws;
+      std::cout << "connecting to ws://" << host << ":" << port << " (probe mode)\n";
+      ws.connect(host, port);
+      probe_session(ws, envs, width, stepped);
+    } catch (const ServerClosed& closed) {
+      if (closed.reason == "plugrl-server-stop") {
+        std::cout << "the server stopped the run\n";
+        return 0;
+      }
+      if (closed.reason == "plugrl-server-resync") {
+        // Section 7.6: whatever was in flight went with the old connection;
+        // the new one starts with an infer, and nothing is resent.
+        std::cout << "the server asked for a resync; reconnecting\n";
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        continue;
+      }
+      std::cerr << "error: " << closed.what() << "\n";
+      return 1;
+    } catch (const TextFrame& frame) {
+      std::cerr << "error: " << frame.what() << "\n";
+      return 2;
+    }
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc > 1 && std::string(argv[1]) == "--probe") {
+    // --probe host port batch
+    std::string host = argc > 2 ? argv[2] : "127.0.0.1";
+    int port = argc > 3 ? std::stoi(argv[3]) : 8000;
+    int batch = argc > 4 ? std::stoi(argv[4]) : 1;
+    try {
+      return run_probe(host, port, batch);
+    } catch (const std::exception& e) {
+      std::cerr << "error: " << e.what() << "\n";
+      return 1;
+    }
+  }
+
   // host port steps batch img_size cameras
   std::string host = argc > 1 ? argv[1] : "127.0.0.1";
   int port = argc > 2 ? std::stoi(argv[2]) : 8000;  // the server default

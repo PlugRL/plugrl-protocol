@@ -701,9 +701,11 @@ the list above except these:
   more.
 * **`all`**: each in turn, starting the client once per scenario.
 
-`examples/raw_client.py --probe` passes all three with the same note. Its
-`--bug` option breaks one clause at a time, and `tests/test_conformance_probe.py`
-checks that the checker names each one.
+Both reference clients pass all three with the same note:
+`examples/raw_client.py --probe` and `plugrl_client --probe`, the C++ one,
+which CI checks on every change. The Python client's `--bug` option breaks
+one clause at a time, and `tests/test_conformance_probe.py` checks that the
+checker names each one.
 
 ### 8.1 The probe environment
 

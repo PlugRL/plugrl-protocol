@@ -23,7 +23,7 @@ own known defects, and everything in it that can be checked by a test is.
 | [`src/plugrl_protocol/conformance.py`](src/plugrl_protocol/conformance.py) | `plugrl-conformance`, which grades a client clause by clause |
 | [`src/plugrl_protocol/server_conformance.py`](src/plugrl_protocol/server_conformance.py) | `plugrl-conformance-server`, which grades a server |
 | [`src/plugrl_protocol/reuse.py`](src/plugrl_protocol/reuse.py) | the server's half of the `reuse-feedback-obs` feature |
-| [`examples/`](examples/) | two env clients written against the spec, sharing no code with PlugRL |
+| [`examples/`](examples/) | two env clients and a reference server written against the spec, sharing no code with PlugRL, and `conformance_server.py`, a shim for `plugrl-conformance` |
 | [`tests/`](tests/) | the spec's checkable clauses, as tests |
 
 The codec is small on purpose. It is the piece both sides import, so anything
